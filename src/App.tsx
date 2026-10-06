@@ -1,18 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { setMuted } from './audio/sfx'
+import { recordBattle } from './game/bestiary'
 import { createMatch, reduce, type Action, type MatchState } from './game/match'
 import { randomSeed } from './game/rng'
 import { loadMatch, loadPrefs, saveMatch, savePrefs, type Prefs } from './game/storage'
 import { Button, Icon, Sheet } from './ui/components'
-import { PassScreen, PickScreen, ReadyScreen } from './ui/screens/Draft'
+import { PassScreen, PickScreen, ReadyScreen, SabotageScreen } from './ui/screens/Draft'
 import { BattleScreen, FinalScreen, VersusScreen, VerdictScreen } from './ui/screens/Fight'
-import { HomeScreen, SetupScreen } from './ui/screens/Menu'
+import { BestiaryScreen, HomeScreen, SetupScreen } from './ui/screens/Menu'
 
-type View = 'home' | 'setup' | 'game'
+type View = 'home' | 'setup' | 'bestiary' | 'game'
+
+const DRAFT_PHASES = new Set(['pass', 'sabotage', 'pick', 'ready'])
 
 function themeOf(view: View, match: MatchState | undefined): string {
   if (view !== 'game' || !match) return 'red'
-  if (match.phase === 'pass' || match.phase === 'pick' || match.phase === 'ready') return match.picker === 0 ? 'red' : 'blue'
+  if (DRAFT_PHASES.has(match.phase)) return match.picker === 0 ? 'red' : 'blue'
   return 'yellow'
 }
 
@@ -39,7 +42,14 @@ export default function App() {
     window.scrollTo(0, 0)
   }, [view, match?.phase, match?.picker, match?.step])
 
-  const dispatch = (a: Action) => setMatch((m) => (m ? reduce(m, a) : m))
+  const matchRef = useRef(match)
+  matchRef.current = match
+  const dispatch = (a: Action) => {
+    // Il bestiario si aggiorna una volta sola, quando la rissa ha un vincitore.
+    const m = matchRef.current
+    if (a.type === 'battleReady' && m && m.phase === 'battle' && !m.fight.battle) recordBattle(m, a.battle)
+    setMatch((cur) => (cur ? reduce(cur, a) : cur))
+  }
 
   const start = (names: [string, string], bestOf: number) => {
     setPrefs((p) => ({ ...p, names, bestOf }))
@@ -53,16 +63,28 @@ export default function App() {
         <SetupScreen initialNames={prefs.names} initialBestOf={prefs.bestOf} onStart={start} onBack={() => setView('home')} />
       </main>
     )
+  if (view === 'bestiary')
+    return (
+      <main className="app">
+        <BestiaryScreen onBack={() => setView('home')} />
+      </main>
+    )
   if (view === 'home' || !match)
     return (
       <main className="app">
-        <HomeScreen canResume={!!match && match.phase !== 'final'} onNew={() => setView('setup')} onResume={() => setView('game')} />
+        <HomeScreen
+          canResume={!!match && match.phase !== 'final'}
+          onNew={() => setView('setup')}
+          onResume={() => setView('game')}
+          onBestiary={() => setView('bestiary')}
+        />
       </main>
     )
 
   const props = { state: match, dispatch }
   const screen = {
     pass: <PassScreen {...props} />,
+    sabotage: <SabotageScreen {...props} />,
     pick: <PickScreen {...props} />,
     ready: <ReadyScreen {...props} />,
     versus: <VersusScreen {...props} />,
@@ -99,7 +121,7 @@ export default function App() {
           <Icon name="menu" />
         </button>
       </header>
-      <div key={`${match.phase}-${match.round}-${match.picker}-${match.step}`} className="screen">
+      <div key={`${match.phase}-${match.round}-${match.turn}-${match.step}`} className="screen">
         {screen}
       </div>
       {menu && (

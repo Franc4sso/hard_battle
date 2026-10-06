@@ -30,6 +30,7 @@ function devBattleApi(mode: string): Plugin {
             apiKey: env.GROQ_API_KEY,
             model: env.GROQ_MODEL,
             reasoning: env.GROQ_REASONING,
+            secret: env.BATTLE_SECRET,
           })
         } catch (e) {
           console.error('[dev-battle-api]', e)

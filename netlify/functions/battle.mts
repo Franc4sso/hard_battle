@@ -6,6 +6,7 @@ export default async (req: Request): Promise<Response> => {
     apiKey: process.env.GROQ_API_KEY,
     model: process.env.GROQ_MODEL,
     reasoning: process.env.GROQ_REASONING,
+    secret: process.env.BATTLE_SECRET,
   })
   return Response.json(out.body, { status: out.status })
 }

@@ -1,13 +1,14 @@
 import { useState } from 'react'
+import { loadBestiary, removeEntry } from '../../game/bestiary'
 import { Button, Footer, anim } from '../components'
 
 const STEPS: [string, string][] = [
-  ['Crea il mostro', 'Quattro scelte tra tre carte a caso: personaggio, arma, personalità, superpotere.'],
-  ['Passa il telefono', 'L’altro fa lo stesso, senza sbirciare il tuo mostro.'],
-  ['Rissa!', 'L’AI simula la battaglia round per round e decide chi vince.'],
+  ['Sabota e crea', 'Scegli una carta-trappola per l’avversario, poi costruisci il tuo mostro tra carte a caso.'],
+  ['Tattica segreta', 'A metà rissa ognuno sceglie di nascosto: attacco, difesa o trucco sporco.'],
+  ['L’AI decide', 'La rissa viene simulata round per round. I mostri finiscono nel bestiario.'],
 ]
 
-export function HomeScreen({ canResume, onNew, onResume }: { canResume: boolean; onNew(): void; onResume(): void }) {
+export function HomeScreen({ canResume, onNew, onResume, onBestiary }: { canResume: boolean; onNew(): void; onResume(): void; onBestiary(): void }) {
   return (
     <div className="screen">
       <div className="mt-6 flex flex-col items-center gap-2 text-center">
@@ -38,6 +39,89 @@ export function HomeScreen({ canResume, onNew, onResume }: { canResume: boolean;
           </Button>
         )}
         <Button onClick={onNew}>NUOVA RISSA!</Button>
+        <Button variant="ghost" className="text-white" onClick={onBestiary}>
+          Apri il bestiario
+        </Button>
+      </Footer>
+    </div>
+  )
+}
+
+export function BestiaryScreen({ onBack }: { onBack(): void }) {
+  const [list, setList] = useState(loadBestiary)
+  const [owner, setOwner] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<string | null>(null)
+  const owners = [...new Set(list.map((e) => e.owner))]
+  const shown = owner ? list.filter((e) => e.owner === owner) : list
+
+  return (
+    <div className="screen">
+      <h1 className="title-comic a-slam mt-2 text-[56px]" style={anim(0, -2)}>
+        BESTIARIO
+      </h1>
+      {list.length === 0 ? (
+        <p className="panel text-[15px] leading-snug font-medium">
+          Ancora vuoto. Ogni mostro che combatte finisce qui, con il suo soprannome e le sue vittorie. Poi potrai rimetterlo in campo.
+        </p>
+      ) : (
+        <>
+          {owners.length > 1 && (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="seg flex-none px-4 text-lg" aria-pressed={owner === null} onClick={() => setOwner(null)}>
+                TUTTI
+              </button>
+              {owners.map((o) => (
+                <button key={o} type="button" className="seg flex-none px-4 text-lg" aria-pressed={owner === o} onClick={() => setOwner(o)}>
+                  {o.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
+          <ul className="flex flex-col gap-3">
+            {shown.map((e, i) => (
+              <li key={e.key} className="panel a-rise flex flex-col gap-1" style={anim(Math.min(i, 8) * 0.05, i % 2 ? 0.6 : -0.6)}>
+                <div className="flex items-start justify-between gap-2">
+                  <b className="comic text-[26px] leading-none">{e.nickname}</b>
+                  <span className="pill shrink-0 text-xs" style={{ background: e.wins > e.losses ? '#FFE14D' : '#fff' }}>
+                    {e.wins} V · {e.losses} S
+                  </span>
+                </div>
+                <span className="label text-mute">di {e.owner}</span>
+                <span className="text-[13px] leading-snug font-medium">
+                  <b>{e.monster.character.name}</b> · {e.monster.weapon.name} · {e.monster.personality.name} · {e.monster.power.name}
+                </span>
+                {e.lastTitle && <span className="text-xs font-bold italic">Ultima rissa: {e.lastTitle}</span>}
+                {confirm === e.key ? (
+                  <div className="mt-1 flex gap-2">
+                    <button
+                      type="button"
+                      className="seg text-lg"
+                      onClick={() => {
+                        removeEntry(e.key)
+                        setList(loadBestiary())
+                        setConfirm(null)
+                      }}
+                    >
+                      SÌ, LIBERALO
+                    </button>
+                    <button type="button" className="seg text-lg" onClick={() => setConfirm(null)}>
+                      NO
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" className="self-end text-xs font-bold underline" onClick={() => setConfirm(e.key)}>
+                    Libera
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <Footer>
+        <Button variant="white" onClick={onBack}>
+          INDIETRO
+        </Button>
       </Footer>
     </div>
   )

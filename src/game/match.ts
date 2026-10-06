@@ -1,44 +1,74 @@
 import { ARENAS, DECKS, SLOTS, type Card, type Slot } from '../../shared/cards'
-import type { Battle, BattleRequest, Monster, Side } from '../../shared/battle'
+import type { Battle, BattleRequest, Monster, Opening, Side, TacticId } from '../../shared/battle'
 import { Rng } from './rng'
 
 export const REROLLS_PER_ROUND = 1
 export const OFFER_SIZE = 3
+/** Le carte che l'avversario può imporre col sabotaggio (il personaggio resta tuo). */
+export const SABOTAGE_SLOTS: readonly Slot[] = ['weapon', 'personality', 'power']
 
-export type Phase = 'pass' | 'pick' | 'ready' | 'versus' | 'battle' | 'verdict' | 'final'
+export type Phase = 'pass' | 'sabotage' | 'pick' | 'ready' | 'versus' | 'battle' | 'verdict' | 'final'
+
+/** Ogni round: A sabota B, B sabota A e crea il suo mostro, A crea il suo. */
+export type Task = 'sabotage' | 'draft'
+export interface Turn {
+  who: Side
+  task: Task
+}
 
 export interface MatchPlayer {
   name: string
   wins: number
 }
 
+/** La carta imposta a un giocatore dall'avversario. */
+export interface Gift {
+  slot: Slot
+  card: Card | null
+}
+
+export interface Fight {
+  opening: Opening | null
+  /** Firma del server per chiedere la seconda parte (null se la prima è offline). */
+  token: string | null
+  tactics: [TacticId | null, TacticId | null]
+  battle: Battle | null
+}
+
 export interface RoundRecord {
   round: number
   arena: Card
   monsters: [Monster, Monster]
+  nicknames: [string, string]
   winner: Side
   title: string
   mvp: string
 }
 
 export interface MatchState {
-  version: 1
+  version: 2
   seed: number
   bestOf: number
   players: [MatchPlayer, MatchPlayer]
   round: number
-  /** Chi crea il mostro per primo in questo round (si alterna). */
+  /** Chi apre il round (si alterna). */
   first: Side
-  /** Chi sta creando il mostro adesso. */
+  /** Indice in turnsFor(first). */
+  turn: number
+  /** Chi ha il telefono adesso. */
   picker: Side
-  /** Indice in SLOTS della carta da scegliere. */
+  /** Indice in draftSlots(picker) della carta da scegliere. */
   step: number
   offer: Card[]
   rerolls: [number, number]
+  /** gifts[i] = la carta imposta al giocatore i. */
+  gifts: [Gift, Gift]
   draft: Partial<Monster>
+  /** Il mostro arriva dal bestiario. */
+  champion: boolean
   monsters: [Monster | null, Monster | null]
   arena: Card
-  battle: Battle | null
+  fight: Fight
   /** Id già usciti nella partita, per non rivedere sempre le stesse carte. */
   drawn: string[]
   history: RoundRecord[]
@@ -46,17 +76,43 @@ export interface MatchState {
 }
 
 export type Action =
-  | { type: 'beginPick' }
+  | { type: 'beginTurn' }
+  | { type: 'sabotage'; index: number }
   | { type: 'pick'; index: number }
   | { type: 'reroll' }
+  | { type: 'useChampion'; monster: Monster }
   | { type: 'confirm' }
   | { type: 'fight' }
+  | { type: 'openingReady'; opening: Opening; token: string | null }
+  | { type: 'tactic'; side: Side; tactic: TacticId }
   | { type: 'battleReady'; battle: Battle }
   | { type: 'verdict' }
   | { type: 'nextRound' }
 
 export const other = (s: Side): Side => (s === 0 ? 1 : 0)
 export const winsNeeded = (bestOf: number) => Math.floor(bestOf / 2) + 1
+
+export function turnsFor(first: Side): Turn[] {
+  const second = other(first)
+  return [
+    { who: first, task: 'sabotage' },
+    { who: second, task: 'sabotage' },
+    { who: second, task: 'draft' },
+    { who: first, task: 'draft' },
+  ]
+}
+
+export const currentTurn = (s: MatchState): Turn => turnsFor(s.first)[s.turn]
+
+/** Le carte che il giocatore sceglie da solo (tutte tranne quella imposta). */
+export const draftSlots = (s: MatchState, who: Side): Slot[] => SLOTS.filter((x) => x !== s.gifts[who].slot)
+
+/** La carta su cui si sta decidendo adesso. */
+export function currentSlot(s: MatchState): Slot {
+  if (s.phase === 'sabotage') return s.gifts[other(s.picker)].slot
+  const slots = draftSlots(s, s.picker)
+  return slots[Math.min(s.step, slots.length - 1)]
+}
 
 /** Pesca n carte distinte non ancora uscite; se il mazzo è finito lo rimescola. */
 function draw(rng: Rng, deck: Card[], drawn: string[], n: number): { cards: Card[]; drawn: string[] } {
@@ -72,9 +128,26 @@ function draw(rng: Rng, deck: Card[], drawn: string[], n: number): { cards: Card
   return { cards, drawn: [...used, ...cards.map((c) => c.id)] }
 }
 
-function withOffer(state: MatchState, rng: Rng, slot: Slot): MatchState {
+function withOffer(state: MatchState, slot: Slot): MatchState {
+  const rng = new Rng(state.seed)
   const { cards, drawn } = draw(rng, DECKS[slot], state.drawn, OFFER_SIZE)
   return { ...state, offer: cards, drawn, seed: rng.seed }
+}
+
+/** Prepara il turno `turn`: chi ha il telefono, cosa deve fare, quali carte vede. */
+function enterTurn(state: MatchState, turn: number, phase: Phase): MatchState {
+  const t = turnsFor(state.first)[turn]
+  const gift = state.gifts[t.who]
+  const next: MatchState = {
+    ...state,
+    turn,
+    picker: t.who,
+    step: 0,
+    champion: false,
+    draft: t.task === 'draft' && gift.card ? { [gift.slot]: gift.card } : {},
+    phase,
+  }
+  return withOffer(next, t.task === 'sabotage' ? state.gifts[other(t.who)].slot : draftSlots(next, t.who)[0])
 }
 
 function startRound(state: MatchState, round: number, first: Side): MatchState {
@@ -82,24 +155,25 @@ function startRound(state: MatchState, round: number, first: Side): MatchState {
   const arena = draw(rng, ARENAS, state.drawn, 1)
   const base: MatchState = {
     ...state,
+    seed: rng.seed,
     round,
     first,
-    picker: first,
-    step: 0,
     rerolls: [REROLLS_PER_ROUND, REROLLS_PER_ROUND],
-    draft: {},
+    gifts: [
+      { slot: rng.pick(SABOTAGE_SLOTS), card: null },
+      { slot: rng.pick(SABOTAGE_SLOTS), card: null },
+    ],
     monsters: [null, null],
     arena: arena.cards[0],
     drawn: arena.drawn,
-    battle: null,
-    phase: 'pass',
+    fight: { opening: null, token: null, tactics: [null, null], battle: null },
   }
-  return withOffer(base, rng, 'character')
+  return enterTurn(base, 0, 'pass')
 }
 
 export function createMatch(names: [string, string], bestOf: number, seed: number): MatchState {
   const blank: MatchState = {
-    version: 1,
+    version: 2,
     seed,
     bestOf,
     players: [
@@ -108,22 +182,26 @@ export function createMatch(names: [string, string], bestOf: number, seed: numbe
     ],
     round: 1,
     first: 0,
+    turn: 0,
     picker: 0,
     step: 0,
     offer: [],
     rerolls: [REROLLS_PER_ROUND, REROLLS_PER_ROUND],
+    gifts: [
+      { slot: 'personality', card: null },
+      { slot: 'personality', card: null },
+    ],
     draft: {},
+    champion: false,
     monsters: [null, null],
     arena: ARENAS[0],
-    battle: null,
+    fight: { opening: null, token: null, tactics: [null, null], battle: null },
     drawn: [],
     history: [],
     phase: 'pass',
   }
   return startRound(blank, 1, 0)
 }
-
-export const currentSlot = (s: MatchState): Slot => SLOTS[Math.min(s.step, SLOTS.length - 1)]
 
 export function matchWinner(s: MatchState): Side | undefined {
   const need = winsNeeded(s.bestOf)
@@ -132,41 +210,78 @@ export function matchWinner(s: MatchState): Side | undefined {
   return undefined
 }
 
+/** Il prossimo giocatore che deve scegliere la tattica (chi ha aperto il round va per primo). */
+export function nextTactician(s: MatchState): Side | undefined {
+  return [s.first, other(s.first)].find((p) => s.fight.tactics[p] === null)
+}
+
 export function reduce(state: MatchState, action: Action): MatchState {
   switch (action.type) {
-    case 'beginPick':
-      return state.phase === 'pass' ? { ...state, phase: 'pick' } : state
+    case 'beginTurn':
+      return state.phase === 'pass' ? { ...state, phase: currentTurn(state).task === 'sabotage' ? 'sabotage' : 'pick' } : state
+
+    case 'sabotage': {
+      const card = state.offer[action.index]
+      if (state.phase !== 'sabotage' || !card) return state
+      const target = other(state.picker)
+      const gifts: [Gift, Gift] = [{ ...state.gifts[0] }, { ...state.gifts[1] }]
+      gifts[target].card = card
+      const next = { ...state, gifts }
+      // Chi ha appena sabotato e ora deve creare il suo mostro non passa il telefono.
+      const sameHands = turnsFor(state.first)[state.turn + 1].who === state.picker
+      return enterTurn(next, state.turn + 1, sameHands ? 'pick' : 'pass')
+    }
 
     case 'pick': {
       const card = state.offer[action.index]
       if (state.phase !== 'pick' || !card) return state
       const draft = { ...state.draft, [currentSlot(state)]: card }
       const step = state.step + 1
-      if (step >= SLOTS.length) return { ...state, draft, step, offer: [], phase: 'ready' }
-      return withOffer({ ...state, draft, step }, new Rng(state.seed), SLOTS[step])
+      const slots = draftSlots(state, state.picker)
+      if (step >= slots.length) return { ...state, draft, step, offer: [], phase: 'ready' }
+      return withOffer({ ...state, draft, step }, slots[step])
     }
 
     case 'reroll': {
       if (state.phase !== 'pick' || state.rerolls[state.picker] <= 0) return state
       const rerolls: [number, number] = [...state.rerolls]
       rerolls[state.picker] -= 1
-      return withOffer({ ...state, rerolls }, new Rng(state.seed), currentSlot(state))
+      return withOffer({ ...state, rerolls }, currentSlot(state))
+    }
+
+    case 'useChampion': {
+      if (state.phase !== 'pick') return state
+      // Anche un campione si tiene il regalo dell'avversario.
+      const gift = state.gifts[state.picker]
+      const draft = { ...action.monster, ...(gift.card ? { [gift.slot]: gift.card } : {}) }
+      return { ...state, draft, champion: true, offer: [], phase: 'ready' }
     }
 
     case 'confirm': {
       if (state.phase !== 'ready') return state
       const monsters: [Monster | null, Monster | null] = [...state.monsters]
       monsters[state.picker] = state.draft as Monster
-      const next = other(state.picker)
-      if (monsters[next]) return { ...state, monsters, draft: {}, phase: 'versus' }
-      return withOffer({ ...state, monsters, picker: next, step: 0, draft: {}, phase: 'pass' }, new Rng(state.seed), 'character')
+      const next = { ...state, monsters, draft: {} }
+      if (state.turn + 1 >= turnsFor(state.first).length) return { ...next, offer: [], phase: 'versus' }
+      return enterTurn(next, state.turn + 1, 'pass')
     }
 
     case 'fight':
-      return state.phase === 'versus' ? { ...state, battle: null, phase: 'battle' } : state
+      return state.phase === 'versus' ? { ...state, phase: 'battle' } : state
+
+    case 'openingReady':
+      if ((state.phase !== 'versus' && state.phase !== 'battle') || state.fight.opening) return state
+      return { ...state, fight: { ...state.fight, opening: action.opening, token: action.token } }
+
+    case 'tactic': {
+      if (state.phase !== 'battle' || !state.fight.opening || state.fight.tactics[action.side]) return state
+      const tactics: [TacticId | null, TacticId | null] = [...state.fight.tactics]
+      tactics[action.side] = action.tactic
+      return { ...state, fight: { ...state.fight, tactics } }
+    }
 
     case 'battleReady': {
-      if (state.phase !== 'battle' || state.battle) return state
+      if (state.phase !== 'battle' || state.fight.battle || nextTactician(state) !== undefined) return state
       const b = action.battle
       const players: [MatchPlayer, MatchPlayer] = [{ ...state.players[0] }, { ...state.players[1] }]
       players[b.winner].wins += 1
@@ -174,15 +289,16 @@ export function reduce(state: MatchState, action: Action): MatchState {
         round: state.round,
         arena: state.arena,
         monsters: state.monsters as [Monster, Monster],
+        nicknames: b.nicknames,
         winner: b.winner,
         title: b.title,
         mvp: b.mvp,
       }
-      return { ...state, battle: b, players, history: [...state.history, record] }
+      return { ...state, fight: { ...state.fight, battle: b }, players, history: [...state.history, record] }
     }
 
     case 'verdict':
-      return state.phase === 'battle' && state.battle ? { ...state, phase: 'verdict' } : state
+      return state.phase === 'battle' && state.fight.battle ? { ...state, phase: 'verdict' } : state
 
     case 'nextRound':
       if (state.phase !== 'verdict') return state

@@ -10,7 +10,7 @@ import {
   type Opening,
   type RoundResult,
 } from '../../shared/battle'
-import { battleRequest, type MatchState } from './match'
+import { battleRequest, currentEvent, type MatchState } from './match'
 
 const TIMEOUT_MS = 20_000
 // Una sola richiesta per passo, anche se la chiedono più schermate (VS e rissa) o StrictMode.
@@ -63,7 +63,7 @@ export function requestOpening(s: MatchState): Promise<{ opening: Opening; token
 
 function isRound(v: unknown): v is RoundResult {
   const r = v as RoundResult | null
-  return !!r && Array.isArray(r.hp) && Array.isArray(r.heal) && Array.isArray(r.damage) && Array.isArray(r.actions) && Array.isArray(r.types)
+  return !!r && Array.isArray(r.hp) && Array.isArray(r.heal) && Array.isArray(r.verdicts) && Array.isArray(r.damage) && Array.isArray(r.actions) && Array.isArray(r.types)
 }
 
 /**
@@ -90,7 +90,8 @@ export function requestRound(s: MatchState): Promise<{ round: RoundResult; next:
     const fighters = fightersOf(s)
     const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]
-    const { round, next } = playRound(f.fs, choices, moves, offlineTexts(fighters, opening, choices), names, Math.random)
+    const rule = currentEvent(s)?.rule
+    const { round, next } = playRound(f.fs, choices, moves, offlineTexts(fighters, opening, choices), names, Math.random, rule)
     return { round, next, token: null }
   })
 }

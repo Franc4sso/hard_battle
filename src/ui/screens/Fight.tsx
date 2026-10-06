@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { MAX_HP, MAX_ROUNDS, MOVE_INFO, blockedReason, heatOf, mvpOf, type Force, type Monster, type Move, type MoveType, type Opening, type RoundResult, type Side } from '../../../shared/battle'
+import { EVENT_RULES, MAX_HP, MAX_ROUNDS, MOVE_INFO, blockedReason, heatOf, mvpOf, stampOf, type ArenaEvent, type Force, type Monster, type Move, type MoveType, type Opening, type RoundResult, type Side } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
-import { matchWinner, nextChooser, other, type MatchState } from '../../game/match'
+import { currentEvent, matchWinner, nextChooser, other, type MatchState } from '../../game/match'
 import { Button, Footer, HpBar, MonsterCard, PLAYER_COLORS, PLAYER_TEXT, anim } from '../components'
 import type { ScreenProps } from './Draft'
 
@@ -232,6 +232,44 @@ function RulesStrip() {
   )
 }
 
+/** L'arena interviene: si vede prima di scegliere, così ci si può adattare. */
+function EventBanner({ event, compact = false }: { event: ArenaEvent; compact?: boolean }) {
+  const info = EVENT_RULES[event.rule]
+  useEffect(() => {
+    if (!compact) {
+      play('twist')
+      vibrate([30, 30, 30])
+    }
+  }, [compact])
+  return (
+    <div
+      className={`a-slam flex w-full flex-col gap-1 rounded-[18px] border-[3px] border-ink bg-ink text-left text-white ${compact ? 'p-2.5' : 'p-3.5'}`}
+      style={{ ...anim(compact ? 0 : 0.15, compact ? 0 : -1.5), boxShadow: '5px 5px 0 #FFB020' }}
+    >
+      <span className={`comic text-sun ${compact ? 'text-[18px]' : 'text-[22px]'}`}>L’ARENA INTERVIENE · {info.title.toUpperCase()}</span>
+      {!compact && <span className="text-[14px] leading-snug font-medium">{event.text}</span>}
+      <span className="text-[13px] leading-snug font-extrabold" style={{ color: '#FFB020' }}>
+        Solo questo round: {info.rule}
+      </span>
+    </div>
+  )
+}
+
+/** Il timbro del giudice: compare solo quando la mossa è stata davvero azzeccata o un disastro. */
+function JudgeStamp({ efficacy, verdict, side, delay }: { efficacy: number; verdict: string; side: Side; delay: number }) {
+  const stamp = stampOf(efficacy)
+  if (!stamp) return null
+  const color = stamp.good ? '#0B8F4A' : '#D42A1E'
+  return (
+    <div className={`a-slam flex max-w-[85%] flex-col gap-0.5 ${side === 0 ? 'self-start' : 'items-end self-end text-right'}`} style={anim(delay, side ? 4 : -4)}>
+      <span className="comic rounded-lg border-[3px] bg-white/85 px-2.5 py-0.5 text-[22px] leading-tight" style={{ color, borderColor: color }}>
+        {stamp.label}
+      </span>
+      {verdict && <span className="text-[12px] leading-snug font-bold italic">«{verdict}»</span>}
+    </div>
+  )
+}
+
 /** Ognuno sceglie la mossa di nascosto, passandosi il telefono. */
 function MovePicker({ state, dispatch }: ScreenProps) {
   const who = nextChooser(state)
@@ -244,12 +282,14 @@ function MovePicker({ state, dispatch }: ScreenProps) {
   const them = state.players[other(who)].name
   const foeLast = state.fight.rounds.at(-1)
   const roundNo = state.fight.rounds.length + 1
+  const event = currentEvent(state)
 
   if (covered)
     return (
       <div key={`cover-${who}-${roundNo}`} className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
         <span className="comic a-pop rounded-full bg-ink px-5 py-1 text-[22px] text-sun">ROUND {roundNo}</span>
         <HeatBadge roundNo={roundNo} />
+        {event && <EventBanner event={event} />}
         <span className="label">Passa il telefono a</span>
         <h2 className="title-comic a-slam text-[64px] break-all" style={{ ...anim(0.1, -3), color: PLAYER_COLORS[who] }}>
           {me.toUpperCase()}
@@ -277,13 +317,14 @@ function MovePicker({ state, dispatch }: ScreenProps) {
         <br />
         <span style={{ color: PLAYER_COLORS[who] }}>{me.toUpperCase()}</span>
       </h2>
+      {event && <EventBanner event={event} compact />}
       {foeLast && (
         <p className="text-[13px] font-bold">
           Nel round precedente {them} ha usato: {opening.moves[other(who)][foeLast.choices[other(who)]].name}
         </p>
       )}
       {opening.moves[who].map((m, i) => {
-        const blocked = blockedReason(fs, who, m.type)
+        const blocked = blockedReason(fs, who, m.type, event?.rule)
         const on = selected === i
         return (
           <div key={i} className="a-rise" style={anim(0.06 + i * 0.06)}>
@@ -393,6 +434,11 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
       <div className="flex flex-wrap items-center justify-center gap-2">
         <span className="comic rounded-full bg-ink px-5 py-1 text-[22px] text-sun">ROUND {index + 1}</span>
         <HeatBadge roundNo={index + 1} />
+        {round.event && (
+          <span className="pill" style={{ background: '#16141a', color: '#FFB020' }}>
+            ARENA: {EVENT_RULES[round.event].title.toUpperCase()}
+          </span>
+        )}
       </div>
       {([0, 1] as Side[]).map((s) => {
         const m = opening.moves[s][round.choices[s]]
@@ -412,6 +458,7 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
             <div className={`sfx a-slam ${s === 0 ? 'ml-4 self-start' : 'mr-4 self-end'}`} style={anim(0.35 + s * 0.7, s ? 6 : -6)}>
               {round.sfx[s]}
             </div>
+            <JudgeStamp efficacy={round.efficacy[s]} verdict={round.verdicts?.[s] ?? ''} side={s} delay={0.5 + s * 0.7} />
           </div>
         )
       })}

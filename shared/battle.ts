@@ -66,13 +66,60 @@ const actsAs = (m: Move): MoveType => (healsBig(m) ? 'cura' : m.type)
 export const MOVES_PER_MONSTER = 4
 export const FORCE_BUDGET = 6
 
+// ---------- eventi dell'arena ----------
+
+/** In alcuni round l'arena cambia una regola, solo per quel round. */
+export type EventRule = 'difese_fragili' | 'cure_bloccate' | 'furia' | 'boomerang' | 'ristoro' | 'seconda_carica'
+
+export const EVENT_RULES: Record<EventRule, { title: string; rule: string }> = {
+  difese_fragili: { title: 'Difese a pezzi', rule: 'La difesa para la metà e non contrattacca.' },
+  cure_bloccate: { title: 'Niente pause', rule: 'Le cure non funzionano.' },
+  furia: { title: 'Furia', rule: 'Gli attacchi fanno una volta e mezzo i danni.' },
+  boomerang: { title: 'Effetto boomerang', rule: 'Chi colpisce si prende un terzo del colpo.' },
+  ristoro: { title: 'Ristoro', rule: 'Le cure valgono il doppio.' },
+  seconda_carica: { title: 'Seconda carica', rule: 'Il superpotere torna utilizzabile, anche se già usato.' },
+}
+
+const EVENT_IDS = Object.keys(EVENT_RULES) as EventRule[]
+
+export interface ArenaEvent {
+  round: number
+  rule: EventRule
+  /** La scena, legata all'arena (dall'AI o dal narratore di riserva). */
+  text: string
+}
+
+/** Calendario degli eventi: uno al round 2 o 3, uno tra il 4 e il 6, regole diverse. */
+export function scheduleEvents(rand: () => number): { round: number; rule: EventRule }[] {
+  const first = EVENT_IDS[Math.floor(rand() * EVENT_IDS.length)]
+  const rest = EVENT_IDS.filter((r) => r !== first)
+  return [
+    { round: 2 + Math.floor(rand() * 2), rule: first },
+    { round: 4 + Math.floor(rand() * 3), rule: rest[Math.floor(rand() * rest.length)] },
+  ]
+}
+
+export const eventAt = (events: ArenaEvent[] | undefined, roundNo: number) => events?.find((e) => e.round === roundNo)
+
 /** Presentazione della rissa: generata mentre si guarda il VS. */
 export interface Opening {
   title: string
   intro: string
   nicknames: [string, string]
   moves: [Move[], Move[]]
+  events: ArenaEvent[]
   source: 'ai' | 'offline'
+}
+
+// ---------- timbri del giudice ----------
+
+/** Il timbro che merita una mossa, dal voto dell'AI. Nei casi normali niente timbro. */
+export function stampOf(efficacy: number): { label: string; good: boolean } | null {
+  if (efficacy >= 1.35) return { label: 'COLPO DA MAESTRO', good: true }
+  if (efficacy >= 1.15) return { label: 'SUPER EFFICACE', good: true }
+  if (efficacy <= 0.7) return { label: 'FIGURACCIA', good: false }
+  if (efficacy <= 0.85) return { label: 'POCO EFFICACE', good: false }
+  return null
 }
 
 // ---------- regole ----------
@@ -110,9 +157,9 @@ export interface FightState {
 
 export const START: FightState = { hp: [MAX_HP, MAX_HP], superUsed: [false, false], lastType: [null, null], round: 0 }
 
-/** Perché una mossa non si può usare adesso (undefined = si può). */
-export function blockedReason(fs: FightState, side: Side, type: MoveType): string | undefined {
-  if (type === 'super' && fs.superUsed[side]) return 'Già usato'
+/** Perché una mossa non si può usare adesso (undefined = si può). `rule`: evento del round. */
+export function blockedReason(fs: FightState, side: Side, type: MoveType, rule?: EventRule): string | undefined {
+  if (type === 'super' && fs.superUsed[side] && rule !== 'seconda_carica') return 'Già usato'
   if (type === 'cura' && fs.lastType[side] === 'cura') return 'Non due volte di fila'
   return undefined
 }
@@ -127,27 +174,35 @@ export function roundEffects(
   eff: [number, number],
   rand: () => number,
   heat = 1,
+  rule?: EventRule,
 ): { heal: [number, number]; damage: [number, number] } {
   const jitter = () => 0.85 + rand() * 0.3
   const heal: [number, number] = [0, 0]
-  const damage: [number, number] = [0, 0]
+  const hits: [number, number] = [0, 0]
+  const counters: [number, number] = [0, 0]
+  const healMult = rule === 'cure_bloccate' ? 0 : rule === 'ristoro' ? 2 : 1
   for (const me of [0, 1] as Side[]) {
     const foe: Side = me === 0 ? 1 : 0
     const m = moves[me]
     const fm = moves[foe]
     const foeHits = fm.type === 'attacco' || (fm.type === 'super' && !healsBig(fm))
     // colpo dell'avversario
-    let incoming = !foeHits ? 0 : fm.type === 'attacco' ? ATTACK * FORCE_MULT[fm.force] : SUPER
+    let incoming = !foeHits ? 0 : fm.type === 'attacco' ? ATTACK * FORCE_MULT[fm.force] * (rule === 'furia' ? 1.5 : 1) : SUPER
     incoming *= eff[foe] * jitter() * heat
     const hitKind = fm.type === 'attacco' ? 'attacco' : 'super'
-    if (foeHits && m.type === 'difesa') incoming *= BLOCK[hitKind][m.force]
-    if (foeHits && healsBig(m)) incoming *= BLOCK[hitKind][3]
+    const fragile = rule === 'difese_fragili' ? 2 : 1
+    if (foeHits && m.type === 'difesa') incoming *= Math.min(1, BLOCK[hitKind][m.force] * fragile)
+    if (foeHits && healsBig(m)) incoming *= Math.min(1, BLOCK[hitKind][3] * fragile)
+    hits[me] = incoming
     // contrattacco di chi si difende da un attacco normale
-    const counter = fm.type === 'difesa' && m.type === 'attacco' ? COUNTER * FORCE_MULT[fm.force] * eff[foe] * jitter() * heat : 0
+    if (fm.type === 'difesa' && m.type === 'attacco' && rule !== 'difese_fragili')
+      counters[me] = COUNTER * FORCE_MULT[fm.force] * eff[foe] * jitter() * heat
     const healBase = healsBig(m) ? SUPER_HEAL : m.type === 'cura' ? HEAL * FORCE_MULT[m.force] : 0
-    heal[me] = Math.round(healBase * eff[me] * jitter())
-    damage[me] = Math.round(incoming + counter)
+    heal[me] = Math.round(healBase * healMult * eff[me] * jitter())
   }
+  // Effetto boomerang: chi colpisce si prende un terzo del colpo che ha dato.
+  const recoil: [number, number] = rule === 'boomerang' ? [hits[1] / 3, hits[0] / 3] : [0, 0]
+  const damage: [number, number] = [Math.round(hits[0] + counters[0] + recoil[0]), Math.round(hits[1] + counters[1] + recoil[1])]
   return { heal, damage }
 }
 
@@ -187,6 +242,8 @@ export interface RoundTexts {
   sfx: [string, string]
   /** Frase finale da usare se quel combattente crolla in questo round. */
   ko: [string, string]
+  /** Il motivo del voto del giudice, in poche parole (per i timbri). */
+  verdicts: [string, string]
   summary: string
 }
 
@@ -200,8 +257,11 @@ export interface RoundResult {
   choices: [number, number]
   types: [MoveType, MoveType]
   efficacy: [number, number]
+  verdicts: [string, string]
   actions: [string, string]
   sfx: [string, string]
+  /** L'evento dell'arena di questo round, se c'era. */
+  event: EventRule | null
   /** Vita recuperata e persa da ciascuno; delta = heal − damage. */
   heal: [number, number]
   damage: [number, number]
@@ -219,10 +279,11 @@ export function playRound(
   texts: RoundTexts,
   names: [string, string],
   rand: () => number,
+  rule?: EventRule,
 ): { round: RoundResult; next: FightState } {
   const roundNo = fs.round + 1
   const types: [MoveType, MoveType] = [moves[0].type, moves[1].type]
-  const fx = roundEffects(moves, texts.efficacy, rand, heatOf(roundNo))
+  const fx = roundEffects(moves, texts.efficacy, rand, heatOf(roundNo), rule)
   // Cura e danni si sommano; si mostra solo quello che è successo davvero:
   // niente cura oltre la vita piena, niente "−106" a chi ne aveva 38.
   // `raw` (senza tetto né pavimento) serve a decidere chi crolla peggio se crollano insieme.
@@ -257,8 +318,10 @@ export function playRound(
       choices,
       types,
       efficacy: texts.efficacy,
+      verdicts: texts.verdicts,
       actions: texts.actions,
       sfx: texts.sfx,
+      event: rule ?? null,
       heal,
       damage,
       delta: [heal[0] - damage[0], heal[1] - damage[1]],
@@ -371,7 +434,36 @@ export function normalizeMoves(raw: unknown, f: Fighter): Move[] {
   return moves
 }
 
-export function normalizeOpening(raw: unknown, fighters: [Fighter, Fighter], source: Opening['source']): Opening | null {
+/** Scena di riserva per un evento, se l'AI non la scrive. */
+function eventText(rule: EventRule, arena: Card): string {
+  const where = lower(arena.name)
+  const scenes: Record<EventRule, string> = {
+    difese_fragili: `Colpo di scena a ${where}: tutto trema e ogni scudo va in pezzi.`,
+    cure_bloccate: `A ${where} qualcuno ha finito le scorte: niente pause, niente merende.`,
+    furia: `Il pubblico di ${where} impazzisce e la furia contagia i combattenti.`,
+    boomerang: `A ${where} ogni cosa rimbalza: chi colpisce rischia di farsi male da solo.`,
+    ristoro: `A ${where} arriva un vassoio di ristoro gratuito per tutti.`,
+    seconda_carica: `Un fulmine colpisce ${where}: i superpoteri si ricaricano!`,
+  }
+  return scenes[rule]
+}
+
+/** Gli eventi in calendario, con la scena scritta dall'AI (nell'ordine) o di riserva. */
+export function buildEvents(schedule: { round: number; rule: EventRule }[], arena: Card, rawEvents?: unknown): ArenaEvent[] {
+  const list = Array.isArray(rawEvents) ? rawEvents : []
+  return schedule.map((e, i) => {
+    const x = list[i] as Record<string, unknown> | string | undefined
+    const t = typeof x === 'string' ? x : x?.text
+    return { ...e, text: text(t, 220) || eventText(e.rule, arena) }
+  })
+}
+
+export function normalizeOpening(
+  raw: unknown,
+  fighters: [Fighter, Fighter],
+  source: Opening['source'],
+  events: ArenaEvent[] = [],
+): Opening | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const title = text(r.title, 80)
@@ -379,11 +471,16 @@ export function normalizeOpening(raw: unknown, fighters: [Fighter, Fighter], sou
   const rawMoves = pair(r.moves)
   const moves: [Move[], Move[]] = [normalizeMoves(rawMoves[0], fighters[0]), normalizeMoves(rawMoves[1], fighters[1])]
   const nick = pair(r.nicknames)
+  // Eventi: arrivano già decisi (dal server); si accettano solo regole conosciute.
+  const okEvents = (Array.isArray(r.events) && !events.length ? (r.events as ArenaEvent[]) : events).filter(
+    (e) => e && EVENT_IDS.includes(e.rule) && Number.isInteger(e.round),
+  )
   return {
     title,
     intro: text(r.intro, 400),
     nicknames: [text(nick[0], 40) || fighters[0].monster.character.name, text(nick[1], 40) || fighters[1].monster.character.name],
     moves,
+    events: okEvents.map((e) => ({ round: e.round, rule: e.rule, text: text(e.text, 220) })),
     source,
   }
 }
@@ -398,7 +495,14 @@ export function normalizeRoundTexts(raw: unknown): RoundTexts | null {
     return Number.isFinite(n) ? Math.round(Math.min(1.5, Math.max(0.6, n)) * 100) / 100 : 1
   }) as [number, number]
   const sfx = pair(r.sfx).map((s, i) => text(s, 14).toUpperCase() || ['SBAM!', 'KRAK!'][i]) as [string, string]
-  return { efficacy: eff, actions, sfx, ko: pair(r.ko).map((k) => text(k, 400)) as [string, string], summary: text(r.summary, 200) }
+  return {
+    efficacy: eff,
+    actions,
+    sfx,
+    ko: pair(r.ko).map((k) => text(k, 400)) as [string, string],
+    verdicts: pair(r.verdicts).map((v) => text(v, 90)) as [string, string],
+    summary: text(r.summary, 200),
+  }
 }
 
 // ---------- narratore di riserva (senza rete o senza AI) ----------
@@ -420,6 +524,7 @@ export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: 
     intro: `Signore e signori, benvenuti: ${lower(arena.name)}. ${arena.desc} Che la rissa abbia inizio!`,
     nicknames: [`${name(fighters[0])} ${pick(EPITHETS)}`, `${name(fighters[1])} ${pick(EPITHETS)}`],
     moves: [fallbackMoves(fighters[0]), fallbackMoves(fighters[1])],
+    events: buildEvents(scheduleEvents(rand), arena),
     source: 'offline',
   }
 }
@@ -457,6 +562,7 @@ export function offlineTexts(
       `${names[0]} va al tappeto e non si rialza. ${names[1]} festeggia sulle macerie.`,
       `${names[1]} va al tappeto e non si rialza. ${names[0]} festeggia sulle macerie.`,
     ],
+    verdicts: ['', ''],
     summary: baseOutcome([names[0], names[1]], moves),
   }
 }

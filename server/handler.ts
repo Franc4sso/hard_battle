@@ -2,7 +2,9 @@ import { deckOf, findCard, type Card, type Slot } from '../shared/cards'
 import {
   START,
   blockedReason,
+  eventAt,
   playRound,
+  scheduleEvents,
   type BattleRequest,
   type FightState,
   type Fighter,
@@ -82,9 +84,10 @@ export function parseRequest(body: unknown): { fighters: [Fighter, Fighter]; are
 
 function parseChoices(v: unknown, t: FightToken): [number, number] | undefined {
   if (!Array.isArray(v) || v.length !== 2) return undefined
+  const rule = eventAt(t.opening.events, t.fs.round + 1)?.rule
   for (const [side, c] of v.entries()) {
     const move = Number.isInteger(c) ? t.opening.moves[side][c as number] : undefined
-    if (!move || blockedReason(t.fs, side as Side, move.type)) return undefined
+    if (!move || blockedReason(t.fs, side as Side, move.type, rule)) return undefined
   }
   return v as [number, number]
 }
@@ -112,10 +115,11 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const parsed = t?.v === 2 && !t.done ? parseRequest(t.req) : undefined
       const choices = t && parsed ? parseChoices(body.choices, t) : undefined
       if (!t || !parsed || !choices) return { status: 400, body: { error: 'bad_request' } }
-      const texts = await generateRound(parsed.fighters, parsed.arena, t.swap, t.opening, t.fs, t.log, choices, ai)
+      const event = eventAt(t.opening.events, t.fs.round + 1)
+      const texts = await generateRound(parsed.fighters, parsed.arena, t.swap, t.opening, t.fs, t.log, choices, event, ai)
       const moves: [Move, Move] = [t.opening.moves[0][choices[0]], t.opening.moves[1][choices[1]]]
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
-      const { round, next } = playRound(t.fs, choices, moves, texts, names, rand)
+      const { round, next } = playRound(t.fs, choices, moves, texts, names, rand, event?.rule)
       const token = sign({ ...t, fs: next, log: [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE), done: !!round.end }, secret)
       return { status: 200, body: { round, token } }
     }
@@ -123,7 +127,7 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
     const parsed = parseRequest(body)
     if (!parsed) return { status: 400, body: { error: 'bad_request' } }
     const swap = rand() < 0.5
-    const opening = await generateOpening(parsed.fighters, parsed.arena, swap, ai)
+    const opening = await generateOpening(parsed.fighters, parsed.arena, swap, scheduleEvents(rand), ai)
     const token = sign({ v: 2, req: parsed.req, swap, opening, fs: START, log: [], done: false } satisfies FightToken, secret)
     return { status: 200, body: { opening, token } }
   } catch (e) {

@@ -1,7 +1,11 @@
 import type { Card } from '../shared/cards'
 import {
+  EVENT_RULES,
   MOVE_INFO,
   baseOutcome,
+  buildEvents,
+  type ArenaEvent,
+  type EventRule,
   heatOf,
   normalizeOpening,
   normalizeRoundTexts,
@@ -50,7 +54,8 @@ function describe(f: Fighter, i: number): string {
 const setup = (f: [Fighter, Fighter], arena: Card) =>
   `ARENA: ${arena.name}. ${arena.desc}\n\n${describe(f[0], 0)}\n\n${describe(f[1], 1)}`
 
-export function openingPrompt(f: [Fighter, Fighter], arena: Card): string {
+export function openingPrompt(f: [Fighter, Fighter], arena: Card, schedule: { round: number; rule: EventRule }[]): string {
+  const events = schedule.map((e) => `  - round ${e.round}: ${EVENT_RULES[e.rule].title} (${EVENT_RULES[e.rule].rule})`).join('\n')
   return `${setup(f, arena)}
 
 PRESENTAZIONE DELLA RISSA. Scrivi:
@@ -63,7 +68,10 @@ PRESENTAZIONE DELLA RISSA. Scrivi:
   - La quarta ha "type": "super" ed è il suo superpotere, con "effect": "colpo" (danno devastante) oppure "cura" (se il superpotere è curativo o rigenerante: grande recupero di vita mentre para i colpi).
   - Gli attacchi nascono dall'arma, difese e cure dalla personalità e dal personaggio.
   - "name": max 4 parole, buffo e specifico per le sue carte (mai generico come "Pugno" o "Scudo"). "desc": cosa fa, max 12 parole.
-Forma: {"title":"...","intro":"...","nicknames":["...","..."],"moves":[[{"type":"attacco","force":3,"name":"...","desc":"..."},{"type":"attacco","force":1,"name":"...","desc":"..."},{"type":"difesa","force":2,"name":"...","desc":"..."},{"type":"super","effect":"colpo","name":"...","desc":"..."}],[...]]}`
+- "events": durante la rissa l'arena interverrà così:
+${events}
+  Per ciascuno, nell'ordine, scrivi la scena (1 frase, max 25 parole) che spiega PERCHÉ succede, usando oggetti, persone o eventi tipici di quest'arena.
+Forma: {"title":"...","intro":"...","nicknames":["...","..."],"events":["...","..."],"moves":[[{"type":"attacco","force":3,"name":"...","desc":"..."},{"type":"attacco","force":1,"name":"...","desc":"..."},{"type":"difesa","force":2,"name":"...","desc":"..."},{"type":"super","effect":"colpo","name":"...","desc":"..."}],[...]]}`
 }
 
 const FORCE_WORD = { 1: 'debole', 2: 'normale', 3: 'forte' } as const
@@ -77,6 +85,7 @@ export function roundPrompt(
   fs: FightState,
   log: string[],
   choices: [number, number],
+  event?: ArenaEvent,
 ): string {
   const names: [string, string] = [f[0].monster.character.name, f[1].monster.character.name]
   const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
@@ -92,17 +101,20 @@ ROUND ${fs.round + 1}. Punti vita: ${names[0]} ${fs.hp[0]}, ${names[1]} ${fs.hp[
 MOSSE SCELTE IN SEGRETO, NELLO STESSO MOMENTO:
 - ${names[0]} (COMBATTENTE 0): "${moves[0].name}" [${label(moves[0])}] ${moves[0].desc}
 - ${names[1]} (COMBATTENTE 1): "${moves[1].name}" [${label(moves[1])}] ${moves[1].desc}
-ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, moves)}
+ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, moves)}${
+    event ? `\nEVENTO DELL'ARENA IN QUESTO ROUND: ${EVENT_RULES[event.rule].title}. ${event.text} Regola: ${EVENT_RULES[event.rule].rule} Fallo pesare nel racconto.` : ''
+  }
 
 Il tuo compito, da giudice e da narratore:
-- "efficacy": per ciascuno un numero da 0.6 a 1.5: quanto la sua mossa funziona davvero contro quella dell'altro, considerando carte, personalità, arena e momento. 1 = normale. Premia le mosse azzeccate e le combinazioni furbe, punisci quelle che si ritorcono contro. Sii imprevedibile ma logico.
+- "efficacy": per ciascuno un numero da 0.6 a 1.5: quanto la sua mossa funziona davvero contro quella dell'altro, considerando carte, personalità, arena e momento. 1 = normale. Premia le mosse azzeccate e le combinazioni furbe, punisci quelle che si ritorcono contro. Sii imprevedibile ma logico, e non dare sempre 1: i voti estremi sono il sale del gioco.
+- "verdicts": per ciascuno il motivo del tuo voto, max 10 parole, secco e divertente (es. "la difesa di ragù non regge l'anguria", "colpire un tardigrado è inutile").
 - "actions": per ciascuno 1-2 frasi su cosa fa con la sua mossa e come va a finire, coerenti con l'esito di base e con l'efficacia che hai dato (alta = effetto spettacolare, bassa = figuraccia).
   - Racconta SOLO la mossa scelta: chi non ha scelto il superpotere non lo usa, chi si difende non attacca.
   - Niente numeri di punti vita o di danni: quelli li mostra il gioco.
 - "sfx": un'onomatopea da fumetto in maiuscolo per ciascuno, max 12 caratteri.
 - "ko": OBBLIGATORIO, una lista di due frasi finali (2 frasi ciascuna): la prima da usare SE crolla il combattente 0, la seconda SE crolla il combattente 1. Il KO, spettacolare e legato alle mosse di questo round, e cosa succede dopo.
 - "summary": 1 frase che riassume il round, per ricordarlo nei round successivi.
-Forma: {"efficacy":[1,1],"actions":["...","..."],"sfx":["...","..."],"ko":["...","..."],"summary":"..."}`
+Forma: {"efficacy":[1.3,0.8],"verdicts":["...","..."],"actions":["...","..."],"sfx":["...","..."],"ko":["...","..."],"summary":"..."}`
 }
 
 class RateLimitError extends Error {}
@@ -170,11 +182,17 @@ const flipPairs = (raw: Record<string, unknown>, keys: string[]) => {
   for (const k of keys) if (Array.isArray(raw[k])) raw[k] = [(raw[k] as unknown[])[1], (raw[k] as unknown[])[0]]
 }
 
-export function generateOpening(fighters: [Fighter, Fighter], arena: Card, swap: boolean, cfg: AiConfig): Promise<Opening> {
+export function generateOpening(
+  fighters: [Fighter, Fighter],
+  arena: Card,
+  swap: boolean,
+  schedule: { round: number; rule: EventRule }[],
+  cfg: AiConfig,
+): Promise<Opening> {
   return retry(async () => {
-    const raw = await askGroq(openingPrompt(ordered(fighters, swap), arena), cfg)
+    const raw = await askGroq(openingPrompt(ordered(fighters, swap), arena, schedule), cfg)
     if (swap) flipPairs(raw, ['nicknames', 'moves'])
-    return normalizeOpening(raw, fighters, 'ai')
+    return normalizeOpening(raw, fighters, 'ai', buildEvents(schedule, arena, raw.events))
   })
 }
 
@@ -186,6 +204,7 @@ export function generateRound(
   fs: FightState,
   log: string[],
   choices: [number, number],
+  event: ArenaEvent | undefined,
   cfg: AiConfig,
 ): Promise<RoundTexts> {
   // Tutto ciò che è a coppie va girato come lo vede l'AI.
@@ -194,8 +213,8 @@ export function generateRound(
     ? { ...fs, hp: ordered(fs.hp, true), superUsed: ordered(fs.superUsed, true), lastType: ordered(fs.lastType, true) }
     : fs
   return retry(async () => {
-    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, seen, seenFs, log, ordered(choices, swap)), cfg)
-    if (swap) flipPairs(raw, ['efficacy', 'actions', 'sfx', 'ko'])
+    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, seen, seenFs, log, ordered(choices, swap), event), cfg)
+    if (swap) flipPairs(raw, ['efficacy', 'verdicts', 'actions', 'sfx', 'ko'])
     return normalizeRoundTexts(raw)
   })
 }

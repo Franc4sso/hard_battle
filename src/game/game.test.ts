@@ -13,6 +13,9 @@ import {
   offlineTexts,
   playRound,
   roundEffects,
+  scheduleEvents,
+  stampOf,
+  type EventRule,
   type FightState,
   type Fighter,
   type Force,
@@ -44,6 +47,7 @@ const texts = (efficacy: [number, number] = [1, 1]): RoundTexts => ({
   actions: ['a', 'b'],
   sfx: ['X', 'Y'],
   ko: ['A crolla', 'B crolla'],
+  verdicts: ['', ''],
   summary: 's',
 })
 const mv = (type: MoveType, force: Force = 2): Move => ({ type, force: type === 'super' ? 3 : force, name: type, desc: '' })
@@ -255,6 +259,50 @@ describe('regole delle mosse', () => {
   })
 })
 
+describe('eventi dell’arena e timbri', () => {
+  const fx = (a: Move, b: Move, rule?: EventRule) => roundEffects([a, b], [1, 1], half, 1, rule)
+
+  it('due eventi a rissa, nei round giusti e con regole diverse', () => {
+    for (let i = 0; i < 50; i++) {
+      const [a, b] = scheduleEvents(Math.random)
+      expect([2, 3]).toContain(a.round)
+      expect([4, 5, 6]).toContain(b.round)
+      expect(a.rule).not.toBe(b.rule)
+    }
+  })
+
+  it('ogni evento cambia davvero le regole di quel round', () => {
+    expect(fx(mv('attacco'), mv('difesa'), 'difese_fragili').damage[1]).toBeGreaterThan(fx(mv('attacco'), mv('difesa')).damage[1])
+    expect(fx(mv('attacco'), mv('difesa'), 'difese_fragili').damage[0]).toBe(0)
+    expect(fx(mv('cura'), mv('difesa'), 'cure_bloccate').heal[0]).toBe(0)
+    expect(fx(mv('cura'), mv('difesa'), 'ristoro').heal[0]).toBe(2 * fx(mv('cura'), mv('difesa')).heal[0])
+    expect(fx(mv('attacco'), mv('cura'), 'furia').damage[1]).toBeGreaterThan(fx(mv('attacco'), mv('cura')).damage[1])
+    expect(fx(mv('attacco'), mv('cura'), 'boomerang').damage[0]).toBeGreaterThan(0)
+    const used: FightState = { ...START, superUsed: [true, true] }
+    expect(blockedReason(used, 0, 'super')).toBeTruthy()
+    expect(blockedReason(used, 0, 'super', 'seconda_carica')).toBeUndefined()
+  })
+
+  it('il round ricorda l’evento, e il server lo applica', async () => {
+    const { round } = playRound(START, [0, 0], [mv('attacco'), mv('attacco')], texts(), NAMES, half, 'furia')
+    expect(round.event).toBe('furia')
+  })
+
+  it('timbri solo per le mosse fuori dal normale', () => {
+    expect(stampOf(1.45)?.label).toBe('COLPO DA MAESTRO')
+    expect(stampOf(1.2)).toMatchObject({ label: 'SUPER EFFICACE', good: true })
+    expect(stampOf(1)).toBeNull()
+    expect(stampOf(0.8)?.good).toBe(false)
+    expect(stampOf(0.6)?.label).toBe('FIGURACCIA')
+  })
+
+  it('il narratore di riserva prepara anche gli eventi', () => {
+    const o = offlineOpening(fighters(), ARENAS[4])
+    expect(o.events).toHaveLength(2)
+    expect(o.events.every((e) => e.text.length > 10)).toBe(true)
+  })
+})
+
 describe('mosse dinamiche', () => {
   it('le mosse di riserva cambiano da mostro a mostro ma rispettano le regole', () => {
     const kits = new Set<string>()
@@ -375,18 +423,35 @@ describe('server', () => {
 
   it('rimette a posto tutte le coppie se ha invertito l’ordine', async () => {
     const f = fighters()
-    const o = await generateOpening(f, ARENAS[0], true, { apiKey: 'k', fetch: groqAnswer(openingAnswer) })
+    const schedule = [
+      { round: 2, rule: 'furia' as const },
+      { round: 5, rule: 'ristoro' as const },
+    ]
+    const o = await generateOpening(f, ARENAS[0], true, schedule, {
+      apiKey: 'k',
+      fetch: groqAnswer({ ...openingAnswer, events: ['Il trenino travolge tutti'] }),
+    })
     // L'AI vede Marco come combattente 0.
     expect(lastSent.messages[1].content.indexOf('Marco')).toBeLessThan(lastSent.messages[1].content.indexOf('Giulia'))
+    expect(lastSent.messages[1].content).toContain('round 2: Furia')
     expect(o.nicknames).toEqual(['Secondo', 'Primo'])
     expect(o.moves[0][0].name).toBe('a1')
+    // Eventi: calendario del server, scena dell'AI (o di riserva se manca).
+    expect(o.events.map((e) => [e.round, e.rule])).toEqual([
+      [2, 'furia'],
+      [5, 'ristoro'],
+    ])
+    expect(o.events[0].text).toBe('Il trenino travolge tutti')
+    expect(o.events[1].text).toBeTruthy()
 
-    const t = await generateRound(f, ARENAS[0], true, o, START, [], [0, 3], {
+    const t = await generateRound(f, ARENAS[0], true, o, START, [], [0, 3], o.events[0], {
       apiKey: 'k',
-      fetch: groqAnswer({ efficacy: [1.4, 0.7], actions: ['di Marco', 'di Giulia'], sfx: ['M', 'G'] }),
+      fetch: groqAnswer({ efficacy: [1.4, 0.7], verdicts: ['per Marco', 'per Giulia'], actions: ['di Marco', 'di Giulia'], sfx: ['M', 'G'] }),
     })
     expect(t.efficacy).toEqual([0.7, 1.4])
+    expect(t.verdicts).toEqual(['per Giulia', 'per Marco'])
     expect(t.actions).toEqual(['di Giulia', 'di Marco'])
+    expect(lastSent.messages[1].content).toContain('EVENTO DELL\'ARENA IN QUESTO ROUND: Furia')
     // Per l'AI la mossa di Marco (super) è quella del combattente 0.
     expect(lastSent.messages[1].content).toMatch(/\(COMBATTENTE 0\): "s0"/)
   })
@@ -399,7 +464,7 @@ describe('server', () => {
       if (body.model === 'openai/gpt-oss-120b') return new Response('rate limit', { status: 429 })
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(openingAnswer) } }] }))
     }) as unknown as typeof fetch
-    const o = await generateOpening(fighters(), ARENAS[0], false, { apiKey: 'k', fetch: fakeFetch })
+    const o = await generateOpening(fighters(), ARENAS[0], false, [], { apiKey: 'k', fetch: fakeFetch })
     expect(o.source).toBe('ai')
     expect(models).toEqual(['openai/gpt-oss-120b', 'openai/gpt-oss-20b'])
   })

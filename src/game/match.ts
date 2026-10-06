@@ -1,5 +1,5 @@
 import { ARENAS, DECKS, SLOTS, type Card, type Slot } from '../../shared/cards'
-import { START, blockedReason, mvpOf, type BattleRequest, type FightState, type Monster, type Opening, type RoundEnd, type RoundResult, type Side } from '../../shared/battle'
+import { START, blockedReason, eventAt, mvpOf, type BattleRequest, type FightState, type Monster, type Opening, type RoundEnd, type RoundResult, type Side } from '../../shared/battle'
 import { Rng } from './rng'
 
 export const REROLLS_PER_ROUND = 1
@@ -216,6 +216,9 @@ export function matchWinner(s: MatchState): Side | undefined {
   return undefined
 }
 
+/** L'evento dell'arena del round da giocare, se c'è. */
+export const currentEvent = (s: MatchState) => eventAt(s.fight.opening?.events, s.fight.fs.round + 1)
+
 /** Chi sceglie per primo la mossa in questo round: si alterna a ogni round. */
 export function roundOpener(s: MatchState): Side {
   return s.fight.rounds.length % 2 === 0 ? s.first : other(s.first)
@@ -288,7 +291,8 @@ export function reduce(state: MatchState, action: Action): MatchState {
     case 'choose': {
       const f = state.fight
       const move = f.opening?.moves[action.side][action.move]
-      if (state.phase !== 'battle' || !move || f.end || nextChooser(state) !== action.side || blockedReason(f.fs, action.side, move.type)) return state
+      if (state.phase !== 'battle' || !move || f.end || nextChooser(state) !== action.side) return state
+      if (blockedReason(f.fs, action.side, move.type, currentEvent(state)?.rule)) return state
       const choices: [number | null, number | null] = [...f.choices]
       choices[action.side] = action.move
       return { ...state, fight: { ...f, choices } }

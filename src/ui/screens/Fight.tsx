@@ -170,9 +170,10 @@ const TACTIC_STYLE: Record<TacticId, { letter: string; bg: string }> = {
 
 /** Ognuno sceglie la tattica di nascosto, passandosi il telefono. */
 function TacticPicker({ state, dispatch }: ScreenProps) {
-  const who = nextTactician(state) as Side
+  const who = nextTactician(state)
   const [covered, setCovered] = useState(true)
   const [selected, setSelected] = useState<TacticId | null>(null)
+  if (who === undefined) return null
   const me = state.players[who].name
   const them = state.players[other(who)].name
 
@@ -326,7 +327,10 @@ export function BattleScreen(props: ScreenProps) {
   const { state, dispatch } = props
   const { opening, battle } = state.fight
   const [shown, setShown] = useState(-1)
-  const [mode, setMode] = useState<'play' | 'tactics' | 'clash'>('play')
+  const [chosenMode, setMode] = useState<'play' | 'tactics' | 'clash'>('play')
+  // Appena l'ultima tattica è scelta si passa allo svelamento nello stesso render:
+  // il TacticPicker non deve mai vedersi senza nessuno a cui chiedere.
+  const mode = chosenMode === 'tactics' && nextTactician(state) === undefined ? 'clash' : chosenMode
   useOpening(props)
 
   const rounds = battle?.rounds ?? opening?.rounds ?? []
@@ -338,11 +342,6 @@ export function BattleScreen(props: ScreenProps) {
     vibrate(last ? [80, 50, 160] : r.power ? [40, 30, 90] : 50)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown, mode])
-
-  // Finite le tattiche si passa allo svelamento.
-  useEffect(() => {
-    if (mode === 'tactics' && nextTactician(state) === undefined) setMode('clash')
-  }, [mode, state])
 
   if (!opening) return <Waiting />
 

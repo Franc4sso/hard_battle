@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MAX_HP, MAX_ROUNDS, MOVE_INFO, blockedReason, heatOf, mvpOf, type Monster, type MoveType, type Opening, type RoundResult, type Side } from '../../../shared/battle'
+import { MAX_HP, MAX_ROUNDS, MOVE_INFO, blockedReason, heatOf, mvpOf, type Force, type Monster, type Move, type MoveType, type Opening, type RoundResult, type Side } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
 import { matchWinner, nextChooser, other, type MatchState } from '../../game/match'
@@ -95,7 +95,41 @@ const SHAKE: Keyframe[] = [
   { transform: 'translate(0,0)' },
 ]
 
-function FighterHp({ name, nickname, hp, side, hitKey }: { name: string; nickname: string; hp: number; side: Side; hitKey: number | null }) {
+/** Vita recuperata e persa, separate e ben leggibili: verde scuro su verde, bianco su rosso. */
+function Changes({ heal, damage, size = 'sm' }: { heal: number; damage: number; size?: 'sm' | 'lg' }) {
+  const cls = size === 'lg' ? 'px-2 text-[22px]' : 'px-1.5 text-[13px]'
+  if (!heal && !damage) return <span className={`comic rounded-md border-2 border-ink bg-white ${cls}`}>±0</span>
+  return (
+    <span className="flex gap-1">
+      {heal > 0 && (
+        <span className={`comic rounded-md border-2 border-ink ${cls}`} style={{ background: '#8CF0A8', color: '#0B5A2B' }}>
+          +{heal}
+        </span>
+      )}
+      {damage > 0 && (
+        <span className={`comic rounded-md border-2 border-ink text-white ${cls}`} style={{ background: '#E8332A' }}>
+          −{damage}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function FighterHp({
+  name,
+  nickname,
+  hp,
+  side,
+  hitKey,
+  change,
+}: {
+  name: string
+  nickname: string
+  hp: number
+  side: Side
+  hitKey: number | null
+  change?: { heal: number; damage: number; key: number }
+}) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     // Shake con Web Animations: niente remount, così la barra della vita scorre.
@@ -109,20 +143,34 @@ function FighterHp({ name, nickname, hp, side, hitKey }: { name: string; nicknam
       </span>
       <b className="text-sm leading-tight font-extrabold">{nickname}</b>
       <HpBar hp={hp} />
-      <span className="text-[11px] font-bold tabular-nums">
-        {hp} / {MAX_HP}
+      <span className="flex min-h-[22px] flex-wrap items-center justify-between gap-1">
+        <span className="text-[11px] font-bold tabular-nums">
+          {hp} / {MAX_HP}
+        </span>
+        {change && (
+          <span key={change.key} className="a-pop" style={anim(0.35)}>
+            <Changes heal={change.heal} damage={change.damage} />
+          </span>
+        )}
       </span>
     </div>
   )
 }
 
-function Scoreboard({ state, hp, hit }: { state: MatchState; hp: [number, number]; hit: { key: number; sides: Side[] } }) {
+function Scoreboard({ state, hp, hit, round }: { state: MatchState; hp: [number, number]; hit: { key: number; sides: Side[] }; round?: RoundResult }) {
   const nick = state.fight.opening?.nicknames ?? ['', '']
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
       {([0, 1] as Side[]).map((s) => (
         <div key={s} style={{ order: s === 0 ? 0 : 2 }}>
-          <FighterHp name={state.players[s].name} nickname={nick[s]} hp={hp[s]} side={s} hitKey={hit.sides.includes(s) ? hit.key : null} />
+          <FighterHp
+            name={state.players[s].name}
+            nickname={nick[s]}
+            hp={hp[s]}
+            side={s}
+            hitKey={hit.sides.includes(s) ? hit.key : null}
+            change={round ? { heal: round.heal[s], damage: round.damage[s], key: hit.key } : undefined}
+          />
         </div>
       ))}
       <div className="title-comic order-1 text-[36px] text-red" style={{ rotate: '-8deg', textShadow: '3px 3px 0 #16141a' }}>
@@ -141,10 +189,20 @@ export const MOVE_STYLE: Record<MoveType, { bg: string; fg: string }> = {
   super: { bg: '#16141a', fg: '#FFE14D' },
 }
 
-function TypeTag({ type }: { type: MoveType }) {
+function TypeTag({ type, force, effect }: { type: MoveType; force?: Force; effect?: Move['effect'] }) {
   return (
-    <span className="inline-block rounded-md border-2 border-ink px-1.5 text-[11px] font-extrabold tracking-wide uppercase" style={{ background: MOVE_STYLE[type].bg, color: MOVE_STYLE[type].fg }}>
+    <span
+      className="inline-flex items-center gap-1 rounded-md border-2 border-ink px-1.5 text-[11px] font-extrabold tracking-wide uppercase"
+      style={{ background: MOVE_STYLE[type].bg, color: MOVE_STYLE[type].fg }}
+    >
       {MOVE_INFO[type].label}
+      {type === 'super' && effect === 'cura' && <span className="normal-case">· cura</span>}
+      {force && type !== 'super' && (
+        <span aria-label={`forza ${force} su 3`} className="tracking-[-0.1em]">
+          {'●'.repeat(force)}
+          <span className="opacity-35">{'●'.repeat(3 - force)}</span>
+        </span>
+      )}
     </span>
   )
 }
@@ -169,6 +227,7 @@ function RulesStrip() {
           <span>{MOVE_INFO[t].rule}</span>
         </li>
       ))}
+      <li className="mt-1">Ogni mostro ha le sue 4 mosse, decise dal personaggio. I pallini sono la forza: ●○○ debole, ●●● forte.</li>
     </ul>
   )
 }
@@ -227,7 +286,7 @@ function MovePicker({ state, dispatch }: ScreenProps) {
         const blocked = blockedReason(fs, who, m.type)
         const on = selected === i
         return (
-          <div key={m.type} className="a-rise" style={anim(0.06 + i * 0.06)}>
+          <div key={i} className="a-rise" style={anim(0.06 + i * 0.06)}>
             <button
               type="button"
               className="choice items-start"
@@ -242,7 +301,7 @@ function MovePicker({ state, dispatch }: ScreenProps) {
             >
               <span className="flex flex-col gap-1">
                 <span className="flex flex-wrap items-center gap-2">
-                  <TypeTag type={m.type} />
+                  <TypeTag type={m.type} force={m.force} effect={m.effect} />
                   {blocked && <span className="text-[11px] font-extrabold">{blocked}</span>}
                 </span>
                 <b className="text-[17px] leading-tight font-extrabold">{m.name}</b>
@@ -316,7 +375,7 @@ function Clash({ state, dispatch }: ScreenProps) {
               <span className="label" style={{ color: PLAYER_TEXT[s] }}>
                 {state.players[s].name}
               </span>
-              <TypeTag type={m.type} />
+              <TypeTag type={m.type} effect={m.effect} />
             </span>
             <b className="comic text-[26px] leading-none">{m.name}</b>
           </div>
@@ -325,11 +384,6 @@ function Clash({ state, dispatch }: ScreenProps) {
       <p className="a-wiggle mt-2 self-center text-center text-[15px] font-extrabold">{waited ? 'Il giudice sta decidendo…' : 'SCONTRO!'}</p>
     </div>
   )
-}
-
-function Delta({ value }: { value: number }) {
-  if (value === 0) return <span className="ml-2 text-[24px]">±0</span>
-  return <span className={`ml-2 text-[28px] ${value > 0 ? 'text-lime' : ''}`}>{value > 0 ? `+${value}` : `−${-value}`}</span>
 }
 
 function RoundView({ state, round, index }: { state: MatchState; round: RoundResult; index: number }) {
@@ -350,7 +404,7 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
               style={{ ...anim(s * 0.7, big ? (s ? 1 : -1) : undefined), ...(big ? { boxShadow: '5px 5px 0 #FF4B3E' } : {}) }}
             >
               <span className="flex flex-wrap items-center gap-2">
-                <TypeTag type={m.type} />
+                <TypeTag type={m.type} force={m.force} effect={m.effect} />
                 <b className={`text-[13px] font-extrabold ${big ? 'text-sun' : ''}`}>{m.name}</b>
               </span>
               <span className="text-[15px] leading-snug font-medium">{round.actions[s]}</span>
@@ -361,11 +415,11 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
           </div>
         )
       })}
-      <div className="a-pop flex justify-center gap-3" style={anim(1.4)}>
+      <div className="a-pop flex flex-wrap justify-center gap-3" style={anim(1.4)}>
         {([0, 1] as Side[]).map((s) => (
-          <span key={s} className="pill comic text-xl" style={{ background: round.delta[s] > 0 ? '#8CF0A8' : round.delta[s] < 0 ? '#fff' : '#eee' }}>
+          <span key={s} className="pill gap-2 text-base">
             <span style={{ color: PLAYER_TEXT[s] }}>{state.players[s].name}</span>
-            <Delta value={round.delta[s]} />
+            <Changes heal={round.heal[s]} damage={round.damage[s]} size="lg" />
           </span>
         ))}
       </div>
@@ -391,7 +445,7 @@ export function BattleScreen(props: ScreenProps) {
     if (count === 0) return
     setViewing(count - 1)
     const r = rounds[count - 1]
-    const strongest = r.types.includes('super') ? 'power' : r.end ? 'ko' : r.delta.some((d) => d < 0) ? 'hit' : 'twist'
+    const strongest = r.end ? 'ko' : r.types.includes('super') ? 'power' : r.damage.some((d) => d > 0) ? 'hit' : 'twist'
     play(strongest)
     vibrate(r.end ? [80, 50, 160] : 50)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -401,12 +455,12 @@ export function BattleScreen(props: ScreenProps) {
 
   const shownRound = viewing !== null && viewing >= 0 ? rounds[viewing] : undefined
   const hp: [number, number] = shownRound ? shownRound.hp : viewing === -1 ? [MAX_HP, MAX_HP] : state.fight.fs.hp
-  const hit = { key: viewing ?? -2, sides: shownRound ? ([0, 1] as Side[]).filter((s) => shownRound.delta[s] < 0) : [] }
+  const hit = { key: viewing ?? -2, sides: shownRound ? ([0, 1] as Side[]).filter((s) => shownRound.damage[s] > 0) : [] }
   const choosing = viewing === null && nextChooser(state) !== undefined
 
   return (
     <div className="screen">
-      <Scoreboard state={state} hp={hp} hit={hit} />
+      <Scoreboard state={state} hp={hp} hit={hit} round={shownRound} />
 
       {viewing === -1 && (
         <>

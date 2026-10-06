@@ -7,6 +7,7 @@ import {
   normalizeRoundTexts,
   type FightState,
   type Fighter,
+  type Move,
   type Opening,
   type RoundTexts,
 } from '../shared/battle'
@@ -56,12 +57,18 @@ PRESENTAZIONE DELLA RISSA. Scrivi:
 - "title": il titolo dell'incontro come un film, max 50 caratteri.
 - "intro": il presentatore apre l'incontro descrivendo l'arena, 1-2 frasi.
 - "nicknames": un soprannome epico e buffo per ciascun combattente, nell'ordine 0 e 1, max 4 parole (es. "Il Flagello di IKEA").
-- "moves": per ciascun combattente ESATTAMENTE 4 mosse, in quest'ordine di tipo: attacco, difesa, cura, super.
-  - attacco: nasce dall'arma; difesa e cura: nascono dalla personalità e dal personaggio; super: è il suo superpotere.
-  - "name": max 4 parole, buffo e specifico per le sue carte (mai generico come "Pugno" o "Scudo").
-  - "desc": cosa fa, max 12 parole.
-Forma: {"title":"...","intro":"...","nicknames":["...","..."],"moves":[[{"type":"attacco","name":"...","desc":"..."},{"type":"difesa","name":"...","desc":"..."},{"type":"cura","name":"...","desc":"..."},{"type":"super","name":"...","desc":"..."}],[...]]}`
+- "moves": per ciascun combattente ESATTAMENTE 4 mosse.
+  - Le prime 3 hanno "type" a scelta tra "attacco", "difesa", "cura", DECISI DAL PERSONAGGIO E DALLE SUE CARTE: un bruto o un'arma pesante può dare 2-3 attacchi e nessuna cura, un tipo zen o ipocondriaco difese e cure, un furbo un attacco e due difese. Almeno un attacco. Non dare a tutti la stessa combinazione.
+  - Le prime 3 hanno "force" 1 (debole), 2 (normale) o 3 (forte), e la somma delle tre force deve essere ESATTAMENTE 6: chi ha più mosse dello stesso tipo le ha di forza diversa.
+  - La quarta ha "type": "super" ed è il suo superpotere, con "effect": "colpo" (danno devastante) oppure "cura" (se il superpotere è curativo o rigenerante: grande recupero di vita mentre para i colpi).
+  - Gli attacchi nascono dall'arma, difese e cure dalla personalità e dal personaggio.
+  - "name": max 4 parole, buffo e specifico per le sue carte (mai generico come "Pugno" o "Scudo"). "desc": cosa fa, max 12 parole.
+Forma: {"title":"...","intro":"...","nicknames":["...","..."],"moves":[[{"type":"attacco","force":3,"name":"...","desc":"..."},{"type":"attacco","force":1,"name":"...","desc":"..."},{"type":"difesa","force":2,"name":"...","desc":"..."},{"type":"super","effect":"colpo","name":"...","desc":"..."}],[...]]}`
 }
+
+const FORCE_WORD = { 1: 'debole', 2: 'normale', 3: 'forte' } as const
+const label = (m: Move) =>
+  m.type === 'super' ? `${MOVE_INFO.super.label}${m.effect === 'cura' ? ' curativo' : ''}` : `${MOVE_INFO[m.type].label}, ${FORCE_WORD[m.force]}`
 
 export function roundPrompt(
   f: [Fighter, Fighter],
@@ -72,7 +79,7 @@ export function roundPrompt(
   choices: [number, number],
 ): string {
   const names: [string, string] = [f[0].monster.character.name, f[1].monster.character.name]
-  const moves = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
+  const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
   const story = log.length ? log.map((s) => `- ${s}`).join('\n') : '- (è il primo round)'
   return `${setup(f, arena)}
 
@@ -83,9 +90,9 @@ ROUND ${fs.round + 1}. Punti vita: ${names[0]} ${fs.hp[0]}, ${names[1]} ${fs.hp[
     heatOf(fs.round + 1) > 1 ? ' LA RISSA SI STA SCALDANDO: i colpi fanno molto più male, racconta un crescendo di furia.' : ''
   }
 MOSSE SCELTE IN SEGRETO, NELLO STESSO MOMENTO:
-- ${names[0]} (COMBATTENTE 0): "${moves[0].name}" [${MOVE_INFO[moves[0].type].label}] ${moves[0].desc}
-- ${names[1]} (COMBATTENTE 1): "${moves[1].name}" [${MOVE_INFO[moves[1].type].label}] ${moves[1].desc}
-ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, [moves[0].type, moves[1].type])}
+- ${names[0]} (COMBATTENTE 0): "${moves[0].name}" [${label(moves[0])}] ${moves[0].desc}
+- ${names[1]} (COMBATTENTE 1): "${moves[1].name}" [${label(moves[1])}] ${moves[1].desc}
+ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, moves)}
 
 Il tuo compito, da giudice e da narratore:
 - "efficacy": per ciascuno un numero da 0.6 a 1.5: quanto la sua mossa funziona davvero contro quella dell'altro, considerando carte, personalità, arena e momento. 1 = normale. Premia le mosse azzeccate e le combinazioni furbe, punisci quelle che si ritorcono contro. Sii imprevedibile ma logico.

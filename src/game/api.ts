@@ -6,7 +6,7 @@ import {
   type FightState,
   type Fighter,
   type Monster,
-  type MoveType,
+  type Move,
   type Opening,
   type RoundResult,
 } from '../../shared/battle'
@@ -63,7 +63,7 @@ export function requestOpening(s: MatchState): Promise<{ opening: Opening; token
 
 function isRound(v: unknown): v is RoundResult {
   const r = v as RoundResult | null
-  return !!r && Array.isArray(r.hp) && Array.isArray(r.delta) && Array.isArray(r.actions) && Array.isArray(r.types)
+  return !!r && Array.isArray(r.hp) && Array.isArray(r.heal) && Array.isArray(r.damage) && Array.isArray(r.actions) && Array.isArray(r.types)
 }
 
 /**
@@ -88,9 +88,9 @@ export function requestRound(s: MatchState): Promise<{ round: RoundResult; next:
       return { round, next, token: body.token }
     }
     const fighters = fightersOf(s)
-    const types: [MoveType, MoveType] = [opening.moves[0][choices[0]].type, opening.moves[1][choices[1]].type]
+    const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]
-    const { round, next } = playRound(f.fs, choices, types, offlineTexts(fighters, opening, choices), names, Math.random)
+    const { round, next } = playRound(f.fs, choices, moves, offlineTexts(fighters, opening, choices), names, Math.random)
     return { round, next, token: null }
   })
 }

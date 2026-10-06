@@ -7,13 +7,19 @@ import {
   normalizeOpening,
   normalizeRoundTexts,
   offlineOpening,
+  FORCE_BUDGET,
+  fallbackMoves,
+  normalizeMoves,
   offlineTexts,
   playRound,
-  roundDelta,
+  roundEffects,
   type FightState,
   type Fighter,
+  type Force,
   type Monster,
+  type Move,
   type MoveType,
+  type Opening,
   type RoundTexts,
 } from '../../shared/battle'
 import { generateOpening, generateRound } from '../../server/groq'
@@ -40,8 +46,11 @@ const texts = (efficacy: [number, number] = [1, 1]): RoundTexts => ({
   ko: ['A crolla', 'B crolla'],
   summary: 's',
 })
-/** Indice della mossa di un tipo (le mosse sono sempre in ordine attacco, difesa, cura, super). */
+const mv = (type: MoveType, force: Force = 2): Move => ({ type, force: type === 'super' ? 3 : force, name: type, desc: '' })
+/** Un set di mosse fisso per i test: una per tipo, forza normale. */
+const KIT: Move[] = [mv('attacco'), mv('difesa'), mv('cura'), mv('super')]
 const IDX: Record<MoveType, number> = { attacco: 0, difesa: 1, cura: 2, super: 3 }
+const testOpening = (): Opening => ({ ...offlineOpening(fighters(), ARENAS[0]), moves: [KIT, KIT] })
 
 /** Gioca i 4 turni di un round: sabotaggi e creazione dei mostri. */
 function draftRound(s: MatchState): MatchState {
@@ -58,7 +67,7 @@ function draftRound(s: MatchState): MatchState {
 /** Rissa offline giocata fino alla fine con mosse fisse. */
 function fightToEnd(s: MatchState, moves: [MoveType, MoveType]): MatchState {
   s = reduce(s, { type: 'fight' })
-  s = reduce(s, { type: 'openingReady', opening: offlineOpening(fighters(), ARENAS[0]), token: null })
+  s = reduce(s, { type: 'openingReady', opening: testOpening(), token: null })
   for (let guard = 0; !s.fight.end; guard++) {
     if (guard > MAX_ROUNDS) throw new Error('la rissa non finisce')
     for (let k = 0; k < 2; k++) {
@@ -66,8 +75,7 @@ function fightToEnd(s: MatchState, moves: [MoveType, MoveType]): MatchState {
       s = reduce(s, { type: 'choose', side: who, move: IDX[moves[who]] })
     }
     if (nextChooser(s) !== undefined) throw new Error('mossa rifiutata')
-    const types: [MoveType, MoveType] = [moves[0], moves[1]]
-    const { round, next } = playRound(s.fight.fs, [IDX[moves[0]], IDX[moves[1]]], types, texts(), NAMES, half)
+    const { round, next } = playRound(s.fight.fs, [IDX[moves[0]], IDX[moves[1]]], [mv(moves[0]), mv(moves[1])], texts(), NAMES, half)
     s = reduce(s, { type: 'roundReady', round, next, token: null })
   }
   return reduce(s, { type: 'verdict' })
@@ -124,27 +132,51 @@ describe('sabotaggio e creazione', () => {
 })
 
 describe('regole delle mosse', () => {
+  const fx = (a: Move, b: Move, eff: [number, number] = [1, 1]) => roundEffects([a, b], eff, half)
+
   it('la difesa para quasi tutto e contrattacca', () => {
-    const d = roundDelta(['attacco', 'difesa'], [1, 1], half)
-    expect(d[1]).toBeGreaterThan(-8)
-    expect(d[0]).toBeLessThan(0)
+    const e = fx(mv('attacco'), mv('difesa'))
+    expect(e.damage[1]).toBeLessThan(8)
+    expect(e.damage[0]).toBeGreaterThan(0)
   })
 
   it('il superpotere sfonda la difesa più di un attacco', () => {
-    expect(roundDelta(['super', 'difesa'], [1, 1], half)[1]).toBeLessThan(roundDelta(['attacco', 'difesa'], [1, 1], half)[1])
+    expect(fx(mv('super'), mv('difesa')).damage[1]).toBeGreaterThan(fx(mv('attacco'), mv('difesa')).damage[1])
   })
 
-  it('la cura recupera vita, ma non protegge dai colpi', () => {
-    expect(roundDelta(['cura', 'difesa'], [1, 1], half)[0]).toBeGreaterThan(0)
-    expect(roundDelta(['cura', 'attacco'], [1, 1], half)[0]).toBeLessThan(0)
+  it('cura e danni restano separati: chi si cura sotto i colpi vede entrambe le cose', () => {
+    const e = fx(mv('cura'), mv('attacco'))
+    expect(e.heal[0]).toBeGreaterThan(0)
+    expect(e.damage[0]).toBeGreaterThan(e.heal[0])
+    const { round } = playRound(START, [2, 0], [mv('cura'), mv('attacco')], texts(), NAMES, half)
+    expect(round.heal[0]).toBe(e.heal[0])
+    expect(round.delta[0]).toBe(round.heal[0] - round.damage[0])
+  })
+
+  it('la forza conta: attacco forte > normale > debole, difesa forte para di più', () => {
+    const hit = (f: Force) => fx(mv('attacco', f), mv('cura')).damage[1]
+    expect(hit(3)).toBeGreaterThan(hit(2))
+    expect(hit(2)).toBeGreaterThan(hit(1))
+    expect(fx(mv('attacco'), mv('difesa', 3)).damage[1]).toBeLessThan(fx(mv('attacco'), mv('difesa', 1)).damage[1])
+    expect(fx(mv('cura', 3), mv('difesa')).heal[0]).toBeGreaterThan(fx(mv('cura', 1), mv('difesa')).heal[0])
+  })
+
+  it('il superpotere curativo fa recuperare tanta vita e para, senza colpire', () => {
+    const healer: Move = { ...mv('super'), effect: 'cura' }
+    const e = fx(healer, mv('attacco'))
+    expect(e.heal[0]).toBeGreaterThan(fx(mv('cura', 3), mv('difesa')).heal[0])
+    expect(e.damage[0]).toBeLessThan(fx(mv('cura'), mv('attacco')).damage[0])
+    expect(e.damage[1]).toBe(0)
+    const { next } = playRound(START, [3, 0], [healer, mv('attacco')], texts(), NAMES, half)
+    expect(blockedReason(next, 0, 'super')).toBeTruthy()
   })
 
   it('l’efficacia data dall’AI pesa sul risultato', () => {
-    expect(roundDelta(['attacco', 'attacco'], [1.5, 0.6], half)[1]).toBeLessThan(roundDelta(['attacco', 'attacco'], [0.6, 1.5], half)[1])
+    expect(fx(mv('attacco'), mv('attacco'), [1.5, 0.6]).damage[1]).toBeGreaterThan(fx(mv('attacco'), mv('attacco'), [0.6, 1.5]).damage[1])
   })
 
   it('superpotere una volta sola, cura non due round di fila', () => {
-    const { next } = playRound(START, [3, 2], ['super', 'cura'], texts(), NAMES, half)
+    const { next } = playRound(START, [3, 2], [mv('super'), mv('cura')], texts(), NAMES, half)
     expect(blockedReason(next, 0, 'super')).toBeTruthy()
     expect(blockedReason(next, 1, 'cura')).toBeTruthy()
     expect(blockedReason(next, 1, 'attacco')).toBeUndefined()
@@ -152,42 +184,57 @@ describe('regole delle mosse', () => {
 
   it('KO: il perdente va a zero e usa la sua frase finale', () => {
     const fs: FightState = { ...START, hp: [60, 10] }
-    const { round } = playRound(fs, [0, 0], ['attacco', 'attacco'], texts(), NAMES, half)
+    const { round } = playRound(fs, [0, 0], [mv('attacco'), mv('attacco')], texts(), NAMES, half)
     expect(round.end?.winner).toBe(0)
     expect(round.hp[1]).toBe(0)
     expect(round.end?.finale).toBe('B crolla')
   })
 
+  it('i numeri mostrati sono quelli veri: niente danni oltre la vita rimasta, niente cure oltre il pieno', () => {
+    const ko = playRound({ ...START, hp: [100, 9], round: 6 }, [3, 0], [mv('super'), mv('cura')], texts(), NAMES, half).round
+    expect(ko.damage[1]).toBe(9 + ko.heal[1])
+    expect(ko.hp[1]).toBe(0)
+    const full = playRound({ ...START, hp: [95, 100] }, [2, 1], [mv('cura'), mv('difesa')], texts(), NAMES, half).round
+    expect(full.heal[0]).toBe(5)
+    expect(full.hp[0]).toBe(100)
+    // A vita piena sotto i colpi la cura si vede comunque: compensa parte del danno.
+    const hit = playRound(START, [2, 0], [mv('cura'), mv('attacco')], texts(), NAMES, half).round
+    expect(hit.heal[0]).toBeGreaterThan(0)
+    expect(hit.hp[0]).toBe(100 + hit.heal[0] - hit.damage[0])
+  })
+
   it('se crollano entrambi vince chi è messo meno peggio', () => {
     const fs: FightState = { ...START, hp: [5, 12] }
-    const { round } = playRound(fs, [3, 3], ['super', 'super'], texts(), NAMES, half)
+    const { round } = playRound(fs, [3, 3], [mv('super'), mv('super')], texts(), NAMES, half)
     expect(round.end?.winner).toBe(1)
-    expect(round.hp).toEqual([0, expect.any(Number)])
+    expect(round.hp[0]).toBe(0)
     expect(round.hp[1]).toBeGreaterThan(0)
   })
 
   it('la rissa si scalda: più avanti i colpi fanno più male', () => {
-    const early = playRound(START, [0, 0], ['attacco', 'attacco'], texts(), NAMES, half).round.delta[0]
-    const late = playRound({ ...START, round: 6 }, [0, 0], ['attacco', 'attacco'], texts(), NAMES, half).round.delta[0]
-    expect(late).toBeLessThan(early)
+    const early = playRound(START, [0, 0], [mv('attacco'), mv('attacco')], texts(), NAMES, half).round.damage[0]
+    const late = playRound({ ...START, round: 6 }, [0, 0], [mv('attacco'), mv('attacco')], texts(), NAMES, half).round.damage[0]
+    expect(late).toBeGreaterThan(early)
   })
 
-  it('con mosse a caso quasi tutte le risse finiscono con un KO, in pochi round', () => {
-    let rand = 12345
-    const r = () => ((rand = (rand * 1103515245 + 12345) % 2 ** 31) / 2 ** 31)
+  it('con mostri e mosse a caso quasi tutte le risse finiscono con un KO, in pochi round', () => {
+    let seed = 12345
+    const r = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31
     let ko = 0
     let rounds = 0
     const N = 400
     for (let i = 0; i < N; i++) {
+      // Mosse di riserva di mostri diversi: composizioni e forze diverse.
+      const kits = [0, 1].map(() => fallbackMoves({ player: 'x', monster: monster(Math.floor(r() * 40)) }))
       let fs = START
       for (;;) {
         const pick = (side: 0 | 1) => {
-          const ok = (['attacco', 'difesa', 'cura', 'super'] as MoveType[]).filter((t) => !blockedReason(fs, side, t))
+          const ok = kits[side].map((m, k) => [m, k] as const).filter(([m]) => !blockedReason(fs, side, m.type))
           return ok[Math.floor(r() * ok.length)]
         }
-        const types: [MoveType, MoveType] = [pick(0), pick(1)]
+        const [a, b] = [pick(0), pick(1)]
         const eff: [number, number] = [0.6 + r() * 0.9, 0.6 + r() * 0.9]
-        const out = playRound(fs, [IDX[types[0]], IDX[types[1]]], types, texts(eff), NAMES, r)
+        const out = playRound(fs, [a[1], b[1]], [a[0], b[0]], texts(eff), NAMES, r)
         fs = out.next
         if (out.round.end) {
           if (!out.round.end.byJury) ko++
@@ -203,22 +250,65 @@ describe('regole delle mosse', () => {
 
   it('dopo l’ultimo round decide la giuria ai punti', () => {
     const fs: FightState = { ...START, hp: [70, 40], round: MAX_ROUNDS - 1 }
-    const { round } = playRound(fs, [1, 1], ['difesa', 'difesa'], texts(), NAMES, half)
+    const { round } = playRound(fs, [1, 1], [mv('difesa'), mv('difesa')], texts(), NAMES, half)
     expect(round.end).toMatchObject({ winner: 0, byJury: true })
+  })
+})
+
+describe('mosse dinamiche', () => {
+  it('le mosse di riserva cambiano da mostro a mostro ma rispettano le regole', () => {
+    const kits = new Set<string>()
+    for (let i = 0; i < 40; i++) {
+      const moves = fallbackMoves({ player: 'x', monster: monster(i) })
+      kits.add(moves.map((m) => `${m.type}${m.force}`).join())
+      expect(moves).toHaveLength(4)
+      expect(moves[3].type).toBe('super')
+      expect(moves.some((m) => m.type === 'attacco')).toBe(true)
+      expect(moves.slice(0, 3).reduce((s, m) => s + m.force, 0)).toBe(FORCE_BUDGET)
+    }
+    expect(kits.size).toBeGreaterThan(2)
+  })
+
+  it('accetta le scelte dell’AI: due attacchi e nessuna cura', () => {
+    const moves = normalizeMoves(
+      [
+        { type: 'super', name: 'Potere', desc: 'p' },
+        { type: 'attacco', force: 3, name: 'Botta', desc: 'b' },
+        { type: 'attacco', force: 1, name: 'Buffetto', desc: 'f' },
+        { type: 'difesa', force: 2, name: 'Muro', desc: 'm' },
+      ],
+      fighters()[0],
+    )
+    expect(moves.map((m) => `${m.type}${m.force}`)).toEqual(['attacco3', 'attacco1', 'difesa2', 'super3'])
+    expect(moves[3].name).toBe('Potere')
+  })
+
+  it('ripara le risposte sbagliate: niente attacchi, forze fuori budget, superpotere mancante', () => {
+    const moves = normalizeMoves(
+      [
+        { type: 'cura', force: 3, name: 'A' },
+        { type: 'difesa', force: 3, name: 'B' },
+        { type: 'cura', force: 3, name: 'C' },
+      ],
+      fighters()[0],
+    )
+    expect(moves[0].type).toBe('attacco')
+    expect(moves.slice(0, 3).every((m) => m.force === 2)).toBe(true)
+    expect(moves[3]).toMatchObject({ type: 'super', name: fighters()[0].monster.power.name })
   })
 })
 
 describe('rissa e partita', () => {
   it('le mosse si scelgono a turno, chi apre si alterna a ogni round', () => {
     let s = draftRound(createMatch(['A', 'B'], 1, 9))
-    s = reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: offlineOpening(fighters(), ARENAS[0]), token: 't' })
+    s = reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: testOpening(), token: 't' })
     expect(nextChooser(s)).toBe(0)
     // Fuori turno non si può scegliere.
     expect(reduce(s, { type: 'choose', side: 1, move: 0 }).fight.choices).toEqual([null, null])
     s = reduce(s, { type: 'choose', side: 0, move: 0 })
     s = reduce(s, { type: 'choose', side: 1, move: 1 })
     expect(nextChooser(s)).toBeUndefined()
-    const { round, next } = playRound(s.fight.fs, [0, 1], ['attacco', 'difesa'], texts(), NAMES, half)
+    const { round, next } = playRound(s.fight.fs, [0, 1], [mv('attacco'), mv('difesa')], texts(), NAMES, half)
     s = reduce(s, { type: 'roundReady', round, next, token: 't2' })
     expect(s.fight.token).toBe('t2')
     expect(s.fight.choices).toEqual([null, null])
@@ -227,7 +317,7 @@ describe('rissa e partita', () => {
 
   it('non si sceglie una mossa bloccata', () => {
     let s = draftRound(createMatch(['A', 'B'], 1, 9))
-    s = reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: offlineOpening(fighters(), ARENAS[0]), token: null })
+    s = reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: testOpening(), token: null })
     s = { ...s, fight: { ...s.fight, fs: { ...s.fight.fs, superUsed: [true, false] } } }
     expect(reduce(s, { type: 'choose', side: 0, move: IDX.super }).fight.choices[0]).toBeNull()
   })
@@ -249,11 +339,11 @@ describe('rissa e partita', () => {
 })
 
 describe('risposte dell’AI', () => {
-  it('le mosse hanno sempre un tipo ciascuno, anche se l’AI sbaglia', () => {
-    const o = normalizeOpening({ title: 'T', moves: [[{ name: 'Uno', type: 'cura' }], []] }, fighters(), 'ai')!
-    expect(o.moves[0].map((m) => m.type)).toEqual(['attacco', 'difesa', 'cura', 'super'])
+  it('il superpotere è sempre l’ultima mossa e non si perde se l’AI lo dimentica', () => {
+    const o = normalizeOpening({ title: 'T', moves: [[{ name: 'Uno', type: 'attacco', force: 2 }], []] }, fighters(), 'ai')!
+    expect(o.moves[0]).toHaveLength(4)
     expect(o.moves[0][0].name).toBe('Uno')
-    expect(o.moves[1][3].name).toBe(fighters()[1].monster.power.name)
+    expect(o.moves[1][3]).toMatchObject({ type: 'super', name: fighters()[1].monster.power.name })
   })
 
   it('l’efficacia resta tra 0.6 e 1.5', () => {
@@ -275,14 +365,13 @@ describe('server', () => {
       lastSent = JSON.parse(String(init.body))
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }))
     }) as unknown as typeof fetch
-  const openingAnswer = {
-    title: 'Titolo',
-    nicknames: ['Primo', 'Secondo'],
-    moves: [
-      ['a0', 'd0', 'c0', 's0'].map((name) => ({ name })),
-      ['a1', 'd1', 'c1', 's1'].map((name) => ({ name })),
-    ],
-  }
+  const kit = (p: string) => [
+    { type: 'attacco', force: 3, name: `a${p}` },
+    { type: 'attacco', force: 1, name: `b${p}` },
+    { type: 'difesa', force: 2, name: `d${p}` },
+    { type: 'super', name: `s${p}` },
+  ]
+  const openingAnswer = { title: 'Titolo', nicknames: ['Primo', 'Secondo'], moves: [kit('0'), kit('1')] }
 
   it('rimette a posto tutte le coppie se ha invertito l’ordine', async () => {
     const f = fighters()

@@ -32,21 +32,39 @@ export interface FighterIds {
 
 export type MoveType = 'attacco' | 'difesa' | 'cura' | 'super'
 
-/** Ogni mostro ha una mossa per tipo, in quest'ordine. */
+/** Tutti i tipi di mossa. */
 export const MOVE_ORDER: readonly MoveType[] = ['attacco', 'difesa', 'cura', 'super']
 
 export const MOVE_INFO: Record<MoveType, { label: string; rule: string }> = {
   attacco: { label: 'Attacco', rule: 'Danni pieni. Contro una difesa fa poco e subisce il contrattacco.' },
   difesa: { label: 'Difesa', rule: 'Para quasi tutto e contrattacca. Se l’altro non attacca è sprecata.' },
   cura: { label: 'Cura', rule: 'Recupera vita. Non due round di fila.' },
-  super: { label: 'Superpotere', rule: 'Colpo devastante, passa anche la difesa. Una volta sola.' },
+  super: { label: 'Superpotere', rule: 'Colpo devastante che passa anche la difesa (o, se il potere cura, grande cura che para). Una volta sola.' },
 }
+
+export type Force = 1 | 2 | 3
 
 export interface Move {
   name: string
   desc: string
   type: MoveType
+  /** 1 debole, 2 normale, 3 forte. Il superpotere è sempre 3. */
+  force: Force
+  /** Solo per il superpotere: colpo devastante o, se il potere è curativo, grande cura che para. */
+  effect?: 'colpo' | 'cura'
 }
+
+export const healsBig = (m: Move) => m.type === 'super' && m.effect === 'cura'
+/** Il tipo "di fatto" di una mossa: un superpotere curativo si comporta come una cura. */
+const actsAs = (m: Move): MoveType => (healsBig(m) ? 'cura' : m.type)
+
+/**
+ * Ogni mostro ha 4 mosse: il superpotere (sempre l'ultima) più 3 mosse di tipo
+ * libero, scelte in base al personaggio, con almeno un attacco. La forza delle
+ * 3 mosse somma sempre a FORCE_BUDGET: chi ha due attacchi ne ha uno debole.
+ */
+export const MOVES_PER_MONSTER = 4
+export const FORCE_BUDGET = 6
 
 /** Presentazione della rissa: generata mentre si guarda il VS. */
 export interface Opening {
@@ -66,9 +84,16 @@ export const MAX_ROUNDS = 8
 const ATTACK = 26
 const SUPER = 44
 const HEAL = 12
+/** Superpotere curativo: tanta vita, e intanto para come una difesa forte. */
+const SUPER_HEAL = 30
 const COUNTER = 10
-/** Quota del colpo che passa una difesa. */
-const BLOCK = { attacco: 0.25, super: 0.5 } as const
+/** Moltiplicatore di danni, cure e contrattacchi per forza della mossa. */
+const FORCE_MULT: Record<Force, number> = { 1: 0.75, 2: 1, 3: 1.3 }
+/** Quota del colpo che passa una difesa, per forza della difesa. */
+const BLOCK: Record<'attacco' | 'super', Record<Force, number>> = {
+  attacco: { 1: 0.4, 2: 0.25, 3: 0.15 },
+  super: { 1: 0.7, 2: 0.5, 3: 0.4 },
+}
 
 /** Più la rissa va avanti più si scalda: i colpi (non le cure) fanno sempre più male. */
 export function heatOf(roundNo: number): number {
@@ -93,31 +118,50 @@ export function blockedReason(fs: FightState, side: Side, type: MoveType): strin
 }
 
 /**
- * Variazione dei punti vita di un round, dalle due mosse scelte insieme.
+ * Cure e danni di un round, dalle due mosse scelte insieme (tenuti separati:
+ * chi si cura mentre viene colpito vede entrambe le cose).
  * `eff` è il giudizio dell'AI (0.6–1.5): quanto ogni mossa è azzeccata.
  */
-export function roundDelta(types: [MoveType, MoveType], eff: [number, number], rand: () => number, heat = 1): [number, number] {
+export function roundEffects(
+  moves: [Move, Move],
+  eff: [number, number],
+  rand: () => number,
+  heat = 1,
+): { heal: [number, number]; damage: [number, number] } {
   const jitter = () => 0.85 + rand() * 0.3
-  const delta: [number, number] = [0, 0]
+  const heal: [number, number] = [0, 0]
+  const damage: [number, number] = [0, 0]
   for (const me of [0, 1] as Side[]) {
     const foe: Side = me === 0 ? 1 : 0
-    const t = types[me]
-    const ft = types[foe]
+    const m = moves[me]
+    const fm = moves[foe]
+    const foeHits = fm.type === 'attacco' || (fm.type === 'super' && !healsBig(fm))
     // colpo dell'avversario
-    let incoming = ft === 'attacco' ? ATTACK : ft === 'super' ? SUPER : 0
+    let incoming = !foeHits ? 0 : fm.type === 'attacco' ? ATTACK * FORCE_MULT[fm.force] : SUPER
     incoming *= eff[foe] * jitter() * heat
-    if (t === 'difesa' && (ft === 'attacco' || ft === 'super')) incoming *= BLOCK[ft]
+    const hitKind = fm.type === 'attacco' ? 'attacco' : 'super'
+    if (foeHits && m.type === 'difesa') incoming *= BLOCK[hitKind][m.force]
+    if (foeHits && healsBig(m)) incoming *= BLOCK[hitKind][3]
     // contrattacco di chi si difende da un attacco normale
-    const counter = ft === 'difesa' && t === 'attacco' ? COUNTER * eff[foe] * jitter() * heat : 0
-    const heal = t === 'cura' ? HEAL * eff[me] * jitter() : 0
-    delta[me] = Math.round(heal - incoming - counter)
+    const counter = fm.type === 'difesa' && m.type === 'attacco' ? COUNTER * FORCE_MULT[fm.force] * eff[foe] * jitter() * heat : 0
+    const healBase = healsBig(m) ? SUPER_HEAL : m.type === 'cura' ? HEAL * FORCE_MULT[m.force] : 0
+    heal[me] = Math.round(healBase * eff[me] * jitter())
+    damage[me] = Math.round(incoming + counter)
   }
-  return delta
+  return { heal, damage }
 }
 
 /** Come vanno le due mosse secondo le regole, in parole (per il prompt). */
-export function baseOutcome(names: [string, string], types: [MoveType, MoveType]): string {
+export function baseOutcome(names: [string, string], moves: [Move, Move]): string {
   const [a, b] = names
+  const types: [MoveType, MoveType] = [actsAs(moves[0]), actsAs(moves[1])]
+  const extra = moves
+    .map((m, i) => (healsBig(m) ? ` ${names[i]} usa il superpotere curativo: recupera tanta vita e intanto para i colpi.` : ''))
+    .join('')
+  return outcomeText(a, b, types) + extra
+}
+
+function outcomeText(a: string, b: string, types: [MoveType, MoveType]): string {
   const key = `${types[0]}-${types[1]}`
   const flip = `${types[1]}-${types[0]}`
   const pairs: Record<string, (x: string, y: string) => string> = {
@@ -158,6 +202,9 @@ export interface RoundResult {
   efficacy: [number, number]
   actions: [string, string]
   sfx: [string, string]
+  /** Vita recuperata e persa da ciascuno; delta = heal − damage. */
+  heal: [number, number]
+  damage: [number, number]
   delta: [number, number]
   hp: [number, number]
   summary: string
@@ -168,15 +215,21 @@ export interface RoundResult {
 export function playRound(
   fs: FightState,
   choices: [number, number],
-  types: [MoveType, MoveType],
+  moves: [Move, Move],
   texts: RoundTexts,
   names: [string, string],
   rand: () => number,
 ): { round: RoundResult; next: FightState } {
   const roundNo = fs.round + 1
-  const delta = roundDelta(types, texts.efficacy, rand, heatOf(roundNo))
-  const raw: [number, number] = [fs.hp[0] + delta[0], fs.hp[1] + delta[1]]
-  const hp: [number, number] = [Math.min(MAX_HP, Math.max(0, raw[0])), Math.min(MAX_HP, Math.max(0, raw[1]))]
+  const types: [MoveType, MoveType] = [moves[0].type, moves[1].type]
+  const fx = roundEffects(moves, texts.efficacy, rand, heatOf(roundNo))
+  // Cura e danni si sommano; si mostra solo quello che è successo davvero:
+  // niente cura oltre la vita piena, niente "−106" a chi ne aveva 38.
+  // `raw` (senza tetto né pavimento) serve a decidere chi crolla peggio se crollano insieme.
+  const raw: [number, number] = [fs.hp[0] + fx.heal[0] - fx.damage[0], fs.hp[1] + fx.heal[1] - fx.damage[1]]
+  const heal: [number, number] = [fx.heal[0] - Math.max(0, raw[0] - MAX_HP), fx.heal[1] - Math.max(0, raw[1] - MAX_HP)]
+  const damage: [number, number] = [fx.damage[0] - Math.max(0, -raw[0]), fx.damage[1] - Math.max(0, -raw[1])]
+  const hp: [number, number] = [fs.hp[0] + heal[0] - damage[0], fs.hp[1] + heal[1] - damage[1]]
   let end: RoundEnd | null = null
   const better = (): Side => (raw[0] === raw[1] ? (rand() < 0.5 ? 0 : 1) : raw[0] > raw[1] ? 0 : 1)
 
@@ -184,8 +237,11 @@ export function playRound(
     // Se crollano entrambi resta in piedi chi è messo meno peggio.
     const winner = hp[0] > 0 ? 0 : hp[1] > 0 ? 1 : better()
     const loser: Side = winner === 0 ? 1 : 0
-    hp[loser] = 0
-    hp[winner] = Math.max(1, hp[winner])
+    if (hp[winner] <= 0) {
+      // Crollati insieme: il vincitore resta in piedi per un soffio.
+      hp[winner] = 1
+      damage[winner] -= 1
+    }
     end = { winner, byJury: false, finale: texts.ko[loser] || `${names[loser]} crolla al tappeto. ${names[winner]} esulta!` }
   } else if (roundNo >= MAX_ROUNDS) {
     const winner = better()
@@ -197,7 +253,19 @@ export function playRound(
   }
 
   return {
-    round: { choices, types, efficacy: texts.efficacy, actions: texts.actions, sfx: texts.sfx, delta, hp, summary: texts.summary, end },
+    round: {
+      choices,
+      types,
+      efficacy: texts.efficacy,
+      actions: texts.actions,
+      sfx: texts.sfx,
+      heal,
+      damage,
+      delta: [heal[0] - damage[0], heal[1] - damage[1]],
+      hp,
+      summary: texts.summary,
+      end,
+    },
     next: {
       hp,
       superUsed: [fs.superUsed[0] || types[0] === 'super', fs.superUsed[1] || types[1] === 'super'],
@@ -211,7 +279,7 @@ export function playRound(
 export function mvpOf(rounds: RoundResult[], winner: Side, opening: Opening): string {
   const loser: Side = winner === 0 ? 1 : 0
   let best: RoundResult | undefined
-  for (const r of rounds) if (!best || r.delta[loser] < best.delta[loser]) best = r
+  for (const r of rounds) if (!best || r.damage[loser] > best.damage[loser]) best = r
   return best ? opening.moves[winner][best.choices[winner]].name : ''
 }
 
@@ -231,15 +299,76 @@ function pair(v: unknown): [unknown, unknown] {
   return [undefined, undefined]
 }
 
-/** Mosse di riserva costruite dalle carte, se l'AI non le dà (o non è raggiungibile). */
+/** Composizioni di riserva (tipo e forza delle 3 mosse oltre al superpotere). */
+const KITS: [MoveType, Force][][] = [
+  [['attacco', 2], ['difesa', 2], ['cura', 2]],
+  [['attacco', 3], ['attacco', 1], ['difesa', 2]],
+  [['attacco', 2], ['attacco', 2], ['cura', 2]],
+  [['attacco', 2], ['difesa', 3], ['difesa', 1]],
+  [['attacco', 3], ['cura', 2], ['difesa', 1]],
+]
+
+function hash(s: string): number {
+  let h = 0
+  for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  return h
+}
+
+/** Mosse di riserva costruite dalle carte, se l'AI non le dà (o non è raggiungibile). Variano da mostro a mostro. */
 export function fallbackMoves(f: Fighter): Move[] {
   const m = f.monster
-  return [
-    { type: 'attacco', name: `Colpo di ${lower(m.weapon.name)}`, desc: m.weapon.desc },
-    { type: 'difesa', name: 'Guardia alta', desc: `Si ripara, ${lower(m.personality.name)} com’è.` },
-    { type: 'cura', name: 'Pausa merenda', desc: 'Un panino, un sorso d’acqua, si riparte.' },
-    { type: 'super', name: m.power.name, desc: m.power.desc },
-  ]
+  const kit = KITS[hash(m.character.id + m.personality.id) % KITS.length]
+  const names: Record<Exclude<MoveType, 'super'>, [string, string][]> = {
+    attacco: [
+      [`Colpo di ${lower(m.weapon.name)}`, m.weapon.desc],
+      [`${m.weapon.name} a tradimento`, 'Quando meno te lo aspetti.'],
+    ],
+    difesa: [
+      ['Guardia alta', `Si ripara, ${lower(m.personality.name)} com’è.`],
+      ['Finta di svenire', 'Nessuno colpisce chi è già a terra. O quasi.'],
+    ],
+    cura: [
+      ['Pausa merenda', 'Un panino, un sorso d’acqua, si riparte.'],
+      ['Respiro profondo', 'Inspira, espira, dimentica i lividi.'],
+    ],
+  }
+  const used: Record<string, number> = {}
+  const moves: Move[] = kit.map(([type, force]) => {
+    const k = (used[type] = (used[type] ?? -1) + 1)
+    const [name, desc] = names[type as Exclude<MoveType, 'super'>][k % 2]
+    return { type, force, name, desc }
+  })
+  return [...moves, { type: 'super', force: 3, effect: HEALING_POWERS.has(m.power.id) ? 'cura' : 'colpo', name: m.power.name, desc: m.power.desc }]
+}
+
+/** Superpoteri curativi, per il narratore di riserva (con l'AI lo decide lei). */
+const HEALING_POWERS = new Set(['s-si-rigenera-con-un-caffe', 's-ringiovanisce-a-ogni-colpo', 's-annulla-l-ultima-mossa'])
+
+const isMoveType = (v: unknown): v is MoveType => MOVE_ORDER.includes(v as MoveType)
+
+/**
+ * Valida le mosse dell'AI: 4 mosse, un solo superpotere (in fondo), almeno un
+ * attacco, forze 1-3 che sommano a FORCE_BUDGET. Se qualcosa non torna si
+ * ripara con le mosse di riserva invece di buttare via tutto.
+ */
+export function normalizeMoves(raw: unknown, f: Fighter): Move[] {
+  const backup = fallbackMoves(f)
+  const list = (Array.isArray(raw) ? raw : []).map((x) => (x ?? {}) as Record<string, unknown>)
+  const superRaw = list.find((m) => m.type === 'super')
+  const others = list.filter((m) => m !== superRaw).slice(0, MOVES_PER_MONSTER - 1)
+  const moves: Move[] = backup.slice(0, MOVES_PER_MONSTER - 1).map((b, k) => {
+    const m = others[k]
+    if (!m) return b
+    const type = isMoveType(m.type) && m.type !== 'super' ? m.type : b.type
+    const force = [1, 2, 3].includes(Number(m.force)) ? (Number(m.force) as Force) : 2
+    return { type, force, name: text(m.name, 40) || b.name, desc: text(m.desc, 140) || b.desc }
+  })
+  if (!moves.some((m) => m.type === 'attacco')) moves[0] = { ...moves[0], type: 'attacco' }
+  if (moves.reduce((s, m) => s + m.force, 0) !== FORCE_BUDGET) for (const m of moves) m.force = 2
+  const sup = backup[MOVES_PER_MONSTER - 1]
+  const effect = superRaw?.effect === 'cura' || superRaw?.effect === 'colpo' ? superRaw.effect : sup.effect
+  moves.push({ type: 'super', force: 3, effect, name: text(superRaw?.name, 40) || sup.name, desc: text(superRaw?.desc, 140) || sup.desc })
+  return moves
 }
 
 export function normalizeOpening(raw: unknown, fighters: [Fighter, Fighter], source: Opening['source']): Opening | null {
@@ -248,15 +377,7 @@ export function normalizeOpening(raw: unknown, fighters: [Fighter, Fighter], sou
   const title = text(r.title, 80)
   if (!title) return null
   const rawMoves = pair(r.moves)
-  const moves = fighters.map((f, i) => {
-    const list = Array.isArray(rawMoves[i]) ? (rawMoves[i] as unknown[]) : []
-    const backup = fallbackMoves(f)
-    // Il tipo lo decide la posizione: una mossa per tipo, sempre.
-    return MOVE_ORDER.map((type, k) => {
-      const m = (list[k] ?? {}) as Record<string, unknown>
-      return { type, name: text(m.name, 40) || backup[k].name, desc: text(m.desc, 140) || backup[k].desc }
-    })
-  }) as [Move[], Move[]]
+  const moves: [Move[], Move[]] = [normalizeMoves(rawMoves[0], fighters[0]), normalizeMoves(rawMoves[1], fighters[1])]
   const nick = pair(r.nicknames)
   return {
     title,
@@ -310,7 +431,7 @@ export function offlineTexts(
   rand: () => number = Math.random,
 ): RoundTexts {
   const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)]
-  const moves = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
+  const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
   const names = fighters.map((f) => f.monster.character.name)
   const act = (i: 0 | 1) => {
     const m = moves[i]
@@ -323,17 +444,19 @@ export function offlineTexts(
       case 'cura':
         return `${names[i]} si concede ${lower(m.name)} per rimettersi in sesto.`
       case 'super':
-        return `${names[i]} scatena il superpotere: ${m.name}! ${m.desc}`
+        return healsBig(m)
+          ? `${names[i]} usa il superpotere: ${m.name}! Si rimette a nuovo mentre i colpi gli rimbalzano addosso.`
+          : `${names[i]} scatena il superpotere: ${m.name}! ${m.desc}`
     }
   }
   return {
     efficacy: [0.8 + rand() * 0.4, 0.8 + rand() * 0.4],
     actions: [act(0), act(1)],
-    sfx: [pick(SFX[moves[0].type]), pick(SFX[moves[1].type])],
+    sfx: [pick(SFX[actsAs(moves[0])]), pick(SFX[actsAs(moves[1])])],
     ko: [
       `${names[0]} va al tappeto e non si rialza. ${names[1]} festeggia sulle macerie.`,
       `${names[1]} va al tappeto e non si rialza. ${names[0]} festeggia sulle macerie.`,
     ],
-    summary: baseOutcome([names[0], names[1]], [moves[0].type, moves[1].type]),
+    summary: baseOutcome([names[0], names[1]], moves),
   }
 }

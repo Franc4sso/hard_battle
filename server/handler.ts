@@ -7,6 +7,7 @@ import {
   type FightState,
   type Fighter,
   type Monster,
+  type Move,
   type Opening,
   type Side,
 } from '../shared/battle'
@@ -112,9 +113,9 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const choices = t && parsed ? parseChoices(body.choices, t) : undefined
       if (!t || !parsed || !choices) return { status: 400, body: { error: 'bad_request' } }
       const texts = await generateRound(parsed.fighters, parsed.arena, t.swap, t.opening, t.fs, t.log, choices, ai)
-      const types = [t.opening.moves[0][choices[0]].type, t.opening.moves[1][choices[1]].type] as const
+      const moves: [Move, Move] = [t.opening.moves[0][choices[0]], t.opening.moves[1][choices[1]]]
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
-      const { round, next } = playRound(t.fs, choices, [types[0], types[1]], texts, names, rand)
+      const { round, next } = playRound(t.fs, choices, moves, texts, names, rand)
       const token = sign({ ...t, fs: next, log: [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE), done: !!round.end }, secret)
       return { status: 200, body: { round, token } }
     }

@@ -1,5 +1,12 @@
-import type { Battle, Monster, Side } from '../../shared/battle'
+import type { Monster, Side } from '../../shared/battle'
 import type { MatchState } from './match'
+
+/** Quello che serve al bestiario di una rissa finita. */
+export interface BattleOutcome {
+  winner: Side
+  nicknames: [string, string]
+  title: string
+}
 
 /**
  * Il bestiario vive sul telefono (localStorage): niente database, niente account.
@@ -41,7 +48,7 @@ function save(list: BestiaryEntry[]) {
 }
 
 /** Il bestiario aggiornato con l'esito di una rissa (funzione pura, per i test). */
-export function withBattle(list: BestiaryEntry[], s: MatchState, battle: Battle, now = Date.now()): BestiaryEntry[] {
+export function withBattle(list: BestiaryEntry[], s: MatchState, battle: BattleOutcome, now = Date.now()): BestiaryEntry[] {
   const next = [...list]
   for (const side of [0, 1] as Side[]) {
     const monster = s.monsters[side]
@@ -67,7 +74,7 @@ export function withBattle(list: BestiaryEntry[], s: MatchState, battle: Battle,
   return next.sort((a, b) => b.wins - a.wins || b.updatedAt - a.updatedAt).slice(0, MAX_ENTRIES)
 }
 
-export function recordBattle(s: MatchState, battle: Battle) {
+export function recordBattle(s: MatchState, battle: BattleOutcome) {
   save(withBattle(loadBestiary(), s, battle))
 }
 

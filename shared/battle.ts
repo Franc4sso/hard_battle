@@ -14,7 +14,7 @@ export interface Fighter {
   monster: Monster
 }
 
-/** Quello che il telefono manda al server per la prima parte: solo nomi e id delle carte. */
+/** Quello che il telefono manda al server all'inizio: solo nomi e id delle carte. */
 export interface BattleRequest {
   arena: string
   fighters: [FighterIds, FighterIds]
@@ -28,283 +28,312 @@ export interface FighterIds {
   power: string
 }
 
-// ---------- tattiche (scelte di nascosto a metà rissa) ----------
+// ---------- mosse ----------
 
-export type TacticId = 'attacco' | 'difesa' | 'trucco'
+export type MoveType = 'attacco' | 'difesa' | 'cura' | 'super'
 
-export interface Tactic {
-  id: TacticId
+/** Ogni mostro ha una mossa per tipo, in quest'ordine. */
+export const MOVE_ORDER: readonly MoveType[] = ['attacco', 'difesa', 'cura', 'super']
+
+export const MOVE_INFO: Record<MoveType, { label: string; rule: string }> = {
+  attacco: { label: 'Attacco', rule: 'Danni pieni. Contro una difesa fa poco e subisce il contrattacco.' },
+  difesa: { label: 'Difesa', rule: 'Para quasi tutto e contrattacca. Se l’altro non attacca è sprecata.' },
+  cura: { label: 'Cura', rule: 'Recupera vita. Non due round di fila.' },
+  super: { label: 'Superpotere', rule: 'Colpo devastante, passa anche la difesa. Una volta sola.' },
+}
+
+export interface Move {
   name: string
   desc: string
-  /** La tattica che questa batte. */
-  beats: TacticId
+  type: MoveType
 }
 
-export const TACTICS: readonly Tactic[] = [
-  { id: 'attacco', name: 'Attacco totale', desc: 'Tutto in avanti, niente freni.', beats: 'trucco' },
-  { id: 'difesa', name: 'Difesa di ferro', desc: 'Para, aspetta, contrattacca.', beats: 'attacco' },
-  { id: 'trucco', name: 'Trucco sporco', desc: 'Inganni, distrazioni, colpi bassi.', beats: 'difesa' },
-]
-
-export const tacticOf = (id: TacticId): Tactic => TACTICS.find((t) => t.id === id)!
-export const isTactic = (v: unknown): v is TacticId => TACTICS.some((t) => t.id === v)
-
-/** Chi vince lo scontro di tattiche, undefined se pari. */
-export function clashWinner(t: [TacticId, TacticId]): Side | undefined {
-  if (t[0] === t[1]) return undefined
-  return tacticOf(t[0]).beats === t[1] ? 0 : 1
-}
-
-// ---------- battaglia ----------
-
-export interface BattleRound {
-  attacker: Side
-  /** La mossa di chi attacca. */
-  action: string
-  /** Come reagisce l'altro (può essere vuoto). */
-  reaction: string
-  sfx: string
-  damage: number
-  /** In questo round l'attaccante usa il superpotere. */
-  power: boolean
-  /** Colpo di scena (spesso legato all'arena). */
-  twist: boolean
-  /** Punti vita dopo il round. */
-  hp: [number, number]
-}
-
-/** Prima parte: presentazione e primi round, nessun KO. Generata mentre si guarda il VS. */
+/** Presentazione della rissa: generata mentre si guarda il VS. */
 export interface Opening {
   title: string
   intro: string
-  rounds: BattleRound[]
-  source: 'ai' | 'offline'
-}
-
-/** Seconda parte: dopo le tattiche, fino al KO. */
-export interface Ending {
-  clash: string
-  rounds: BattleRound[]
-  finale: string
-  winner: Side
-  reason: string
-  mvp: string
   nicknames: [string, string]
+  moves: [Move[], Move[]]
   source: 'ai' | 'offline'
 }
 
-/** La rissa completa, come la vede l'app. */
-export interface Battle {
-  title: string
-  intro: string
-  rounds: BattleRound[]
-  /** Indice del primo round dopo le tattiche. */
-  tacticAt: number
-  tactics: [TacticId, TacticId]
-  clash: string
-  finale: string
-  winner: Side
-  reason: string
-  mvp: string
-  nicknames: [string, string]
-  source: 'ai' | 'offline'
-}
-
-/** Round dopo le tattiche: estratti a caso, così non si sa quando arriva il KO. */
-export const ENDING_ROUNDS = { min: 2, max: 5 } as const
-export const endingRounds = (rand: () => number = Math.random) =>
-  ENDING_ROUNDS.min + Math.floor(rand() * (ENDING_ROUNDS.max - ENDING_ROUNDS.min + 1))
+// ---------- regole ----------
 
 export const MAX_HP = 100
-/** Nella prima parte nessuno scende sotto questa soglia: la rissa è ancora aperta. */
-export const OPENING_FLOOR = 35
-const FALLBACK_SFX = ['SBAM!', 'KRAK!', 'POW!', 'ZOT!', 'SDENG!', 'WHAM!', 'BONK!', 'SPLAT!']
+/** Se nessuno crolla entro questo round, decide la giuria. */
+export const MAX_ROUNDS = 8
+
+const ATTACK = 26
+const SUPER = 44
+const HEAL = 12
+const COUNTER = 10
+/** Quota del colpo che passa una difesa. */
+const BLOCK = { attacco: 0.25, super: 0.5 } as const
+
+/** Più la rissa va avanti più si scalda: i colpi (non le cure) fanno sempre più male. */
+export function heatOf(roundNo: number): number {
+  return roundNo <= 3 ? 1 : roundNo <= 5 ? 1.5 : 2
+}
+
+export interface FightState {
+  hp: [number, number]
+  superUsed: [boolean, boolean]
+  lastType: [MoveType | null, MoveType | null]
+  /** Round giocati. */
+  round: number
+}
+
+export const START: FightState = { hp: [MAX_HP, MAX_HP], superUsed: [false, false], lastType: [null, null], round: 0 }
+
+/** Perché una mossa non si può usare adesso (undefined = si può). */
+export function blockedReason(fs: FightState, side: Side, type: MoveType): string | undefined {
+  if (type === 'super' && fs.superUsed[side]) return 'Già usato'
+  if (type === 'cura' && fs.lastType[side] === 'cura') return 'Non due volte di fila'
+  return undefined
+}
+
+/**
+ * Variazione dei punti vita di un round, dalle due mosse scelte insieme.
+ * `eff` è il giudizio dell'AI (0.6–1.5): quanto ogni mossa è azzeccata.
+ */
+export function roundDelta(types: [MoveType, MoveType], eff: [number, number], rand: () => number, heat = 1): [number, number] {
+  const jitter = () => 0.85 + rand() * 0.3
+  const delta: [number, number] = [0, 0]
+  for (const me of [0, 1] as Side[]) {
+    const foe: Side = me === 0 ? 1 : 0
+    const t = types[me]
+    const ft = types[foe]
+    // colpo dell'avversario
+    let incoming = ft === 'attacco' ? ATTACK : ft === 'super' ? SUPER : 0
+    incoming *= eff[foe] * jitter() * heat
+    if (t === 'difesa' && (ft === 'attacco' || ft === 'super')) incoming *= BLOCK[ft]
+    // contrattacco di chi si difende da un attacco normale
+    const counter = ft === 'difesa' && t === 'attacco' ? COUNTER * eff[foe] * jitter() * heat : 0
+    const heal = t === 'cura' ? HEAL * eff[me] * jitter() : 0
+    delta[me] = Math.round(heal - incoming - counter)
+  }
+  return delta
+}
+
+/** Come vanno le due mosse secondo le regole, in parole (per il prompt). */
+export function baseOutcome(names: [string, string], types: [MoveType, MoveType]): string {
+  const [a, b] = names
+  const key = `${types[0]}-${types[1]}`
+  const flip = `${types[1]}-${types[0]}`
+  const pairs: Record<string, (x: string, y: string) => string> = {
+    'attacco-attacco': (x, y) => `${x} e ${y} si colpiscono a vicenda: danni per entrambi.`,
+    'attacco-difesa': (x, y) => `${y} para quasi tutto il colpo di ${x} e lo contrattacca.`,
+    'attacco-cura': (x, y) => `${y} si cura ma intanto incassa in pieno il colpo di ${x}.`,
+    'attacco-super': (x, y) => `${x} attacca, ma ${y} scatena il superpotere: colpo devastante per ${x}.`,
+    'difesa-difesa': (x, y) => `${x} e ${y} si mettono entrambi in guardia: stallo, nessun danno.`,
+    'difesa-cura': (x, y) => `${x} si difende dal nulla mentre ${y} si cura indisturbato.`,
+    'difesa-super': (x, y) => `${x} si difende, ma il superpotere di ${y} sfonda parte della difesa.`,
+    'cura-cura': (x, y) => `${x} e ${y} si prendono una pausa per curarsi entrambi.`,
+    'cura-super': (x, y) => `${x} prova a curarsi mentre ${y} lo travolge con il superpotere.`,
+    'super-super': (x, y) => `${x} e ${y} scatenano insieme i superpoteri: impatto devastante per entrambi.`,
+  }
+  if (pairs[key]) return pairs[key](a, b)
+  return pairs[flip](b, a)
+}
+
+/** Testi di un round: dall'AI o dal narratore di riserva. */
+export interface RoundTexts {
+  efficacy: [number, number]
+  actions: [string, string]
+  sfx: [string, string]
+  /** Frase finale da usare se quel combattente crolla in questo round. */
+  ko: [string, string]
+  summary: string
+}
+
+export interface RoundEnd {
+  winner: Side
+  byJury: boolean
+  finale: string
+}
+
+export interface RoundResult {
+  choices: [number, number]
+  types: [MoveType, MoveType]
+  efficacy: [number, number]
+  actions: [string, string]
+  sfx: [string, string]
+  delta: [number, number]
+  hp: [number, number]
+  summary: string
+  end: RoundEnd | null
+}
+
+/** Applica un round: punti vita, mosse usate, KO o verdetto della giuria. */
+export function playRound(
+  fs: FightState,
+  choices: [number, number],
+  types: [MoveType, MoveType],
+  texts: RoundTexts,
+  names: [string, string],
+  rand: () => number,
+): { round: RoundResult; next: FightState } {
+  const roundNo = fs.round + 1
+  const delta = roundDelta(types, texts.efficacy, rand, heatOf(roundNo))
+  const raw: [number, number] = [fs.hp[0] + delta[0], fs.hp[1] + delta[1]]
+  const hp: [number, number] = [Math.min(MAX_HP, Math.max(0, raw[0])), Math.min(MAX_HP, Math.max(0, raw[1]))]
+  let end: RoundEnd | null = null
+  const better = (): Side => (raw[0] === raw[1] ? (rand() < 0.5 ? 0 : 1) : raw[0] > raw[1] ? 0 : 1)
+
+  if (hp[0] <= 0 || hp[1] <= 0) {
+    // Se crollano entrambi resta in piedi chi è messo meno peggio.
+    const winner = hp[0] > 0 ? 0 : hp[1] > 0 ? 1 : better()
+    const loser: Side = winner === 0 ? 1 : 0
+    hp[loser] = 0
+    hp[winner] = Math.max(1, hp[winner])
+    end = { winner, byJury: false, finale: texts.ko[loser] || `${names[loser]} crolla al tappeto. ${names[winner]} esulta!` }
+  } else if (roundNo >= MAX_ROUNDS) {
+    const winner = better()
+    end = {
+      winner,
+      byJury: true,
+      finale: `Dopo ${MAX_ROUNDS} round nessuno crolla. La giuria, sfinita, assegna la vittoria a ${names[winner]} ai punti.`,
+    }
+  }
+
+  return {
+    round: { choices, types, efficacy: texts.efficacy, actions: texts.actions, sfx: texts.sfx, delta, hp, summary: texts.summary, end },
+    next: {
+      hp,
+      superUsed: [fs.superUsed[0] || types[0] === 'super', fs.superUsed[1] || types[1] === 'super'],
+      lastType: types,
+      round: roundNo,
+    },
+  }
+}
+
+/** La mossa migliore del vincitore: quella che ha fatto più male. */
+export function mvpOf(rounds: RoundResult[], winner: Side, opening: Opening): string {
+  const loser: Side = winner === 0 ? 1 : 0
+  let best: RoundResult | undefined
+  for (const r of rounds) if (!best || r.delta[loser] < best.delta[loser]) best = r
+  return best ? opening.moves[winner][best.choices[winner]].name : ''
+}
+
+// ---------- validazione delle risposte dell'AI ----------
 
 function text(v: unknown, max: number): string {
   return typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : ''
 }
 
-export function side(v: unknown): Side | undefined {
-  if (v === 0 || v === '0') return 0
-  if (v === 1 || v === '1') return 1
-  return undefined
+/** Una coppia di valori: lista [a, b] o, se l'AI fa di testa sua, oggetto {"0": a, "1": b}. */
+function pair(v: unknown): [unknown, unknown] {
+  if (Array.isArray(v)) return [v[0], v[1]]
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return [o['0'] ?? o.a, o['1'] ?? o.b]
+  }
+  return [undefined, undefined]
 }
 
-function parseRounds(raw: unknown, max: number, offset = 0): BattleRound[] {
-  if (!Array.isArray(raw)) return []
-  return raw
-    .slice(0, max)
-    .map((x, i) => {
-      const o = (x ?? {}) as Record<string, unknown>
-      const dmg = Number(o.damage)
-      return {
-        attacker: side(o.attacker) ?? (((i + offset) % 2) as Side),
-        action: text(o.action ?? o.text, 400),
-        reaction: text(o.reaction, 400),
-        sfx: text(o.sfx, 14).toUpperCase() || FALLBACK_SFX[(i + offset) % FALLBACK_SFX.length],
-        damage: Number.isFinite(dmg) ? Math.round(Math.min(45, Math.max(3, dmg))) : 15,
-        power: o.power === true,
-        twist: o.twist === true,
-        hp: [MAX_HP, MAX_HP] as [number, number],
-      }
+/** Mosse di riserva costruite dalle carte, se l'AI non le dà (o non è raggiungibile). */
+export function fallbackMoves(f: Fighter): Move[] {
+  const m = f.monster
+  return [
+    { type: 'attacco', name: `Colpo di ${lower(m.weapon.name)}`, desc: m.weapon.desc },
+    { type: 'difesa', name: 'Guardia alta', desc: `Si ripara, ${lower(m.personality.name)} com’è.` },
+    { type: 'cura', name: 'Pausa merenda', desc: 'Un panino, un sorso d’acqua, si riparte.' },
+    { type: 'super', name: m.power.name, desc: m.power.desc },
+  ]
+}
+
+export function normalizeOpening(raw: unknown, fighters: [Fighter, Fighter], source: Opening['source']): Opening | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const title = text(r.title, 80)
+  if (!title) return null
+  const rawMoves = pair(r.moves)
+  const moves = fighters.map((f, i) => {
+    const list = Array.isArray(rawMoves[i]) ? (rawMoves[i] as unknown[]) : []
+    const backup = fallbackMoves(f)
+    // Il tipo lo decide la posizione: una mossa per tipo, sempre.
+    return MOVE_ORDER.map((type, k) => {
+      const m = (list[k] ?? {}) as Record<string, unknown>
+      return { type, name: text(m.name, 40) || backup[k].name, desc: text(m.desc, 140) || backup[k].desc }
     })
-    .filter((r) => r.action)
-}
-
-/**
- * Ricalcola i punti vita in modo coerente con la storia. Senza vincitore (prima parte)
- * nessuno scende sotto OPENING_FLOOR; con un vincitore lui resta in piedi e il perdente
- * va a zero sull'ultimo colpo del vincitore.
- */
-function applyHp(rounds: BattleRound[], start: [number, number], winner?: Side) {
-  const hp: [number, number] = [start[0], start[1]]
-  const loser = winner === undefined ? undefined : winner === 0 ? 1 : 0
-  let ko = -1
-  if (winner !== undefined) rounds.forEach((r, i) => r.attacker === winner && (ko = i))
-  rounds.forEach((r, i) => {
-    const target: Side = r.attacker === 0 ? 1 : 0
-    let dmg = r.damage
-    if (winner === undefined) dmg = Math.min(dmg, hp[target] - OPENING_FLOOR)
-    else if (target === winner) dmg = Math.min(dmg, hp[winner] - 5)
-    else if (i === ko) dmg = hp[target]
-    else dmg = Math.min(dmg, hp[target] - 5)
-    r.damage = Math.max(0, dmg)
-    hp[target] -= r.damage
-    r.hp = [hp[0], hp[1]]
-  })
-  // Il vincitore non attacca mai (risposta strana dell'AI): il KO arriva comunque alla fine.
-  if (loser !== undefined && ko === -1 && rounds.length) rounds[rounds.length - 1].hp[loser] = 0
-}
-
-export function normalizeOpening(raw: unknown, source: Opening['source']): Opening | null {
-  if (!raw || typeof raw !== 'object') return null
-  const r = raw as Record<string, unknown>
-  const rounds = parseRounds(r.rounds, 3).map((x) => ({ ...x, power: false }))
-  if (rounds.length < 1) return null
-  applyHp(rounds, [MAX_HP, MAX_HP])
-  return { title: text(r.title, 80) || 'Rissa senza nome', intro: text(r.intro, 400), rounds, source }
-}
-
-export function normalizeEnding(raw: unknown, start: [number, number], source: Ending['source']): Ending | null {
-  if (!raw || typeof raw !== 'object') return null
-  const r = raw as Record<string, unknown>
-  const winner = side(r.winner)
-  if (winner === undefined) return null
-  const rounds = parseRounds(r.rounds, ENDING_ROUNDS.max + 1, 1)
-  if (rounds.length < 1) return null
-  applyHp(rounds, start, winner)
-  const nick = Array.isArray(r.nicknames) ? r.nicknames : []
+  }) as [Move[], Move[]]
+  const nick = pair(r.nicknames)
   return {
-    clash: text(r.clash, 400),
-    rounds,
-    finale: text(r.finale, 500),
-    winner,
-    reason: text(r.reason, 300),
-    mvp: text(r.mvp, 100),
-    nicknames: [text(nick[0], 40), text(nick[1], 40)],
+    title,
+    intro: text(r.intro, 400),
+    nicknames: [text(nick[0], 40) || fighters[0].monster.character.name, text(nick[1], 40) || fighters[1].monster.character.name],
+    moves,
     source,
   }
 }
 
-/** Punti vita alla fine della prima parte. */
-export const hpAfter = (o: Opening): [number, number] => o.rounds[o.rounds.length - 1]?.hp ?? [MAX_HP, MAX_HP]
-
-export function combine(opening: Opening, ending: Ending, tactics: [TacticId, TacticId], fighters: [Fighter, Fighter]): Battle {
-  return {
-    title: opening.title,
-    intro: opening.intro,
-    rounds: [...opening.rounds, ...ending.rounds],
-    tacticAt: opening.rounds.length,
-    tactics,
-    clash: ending.clash,
-    finale: ending.finale,
-    winner: ending.winner,
-    reason: ending.reason,
-    mvp: ending.mvp,
-    nicknames: [ending.nicknames[0] || fighters[0].monster.character.name, ending.nicknames[1] || fighters[1].monster.character.name],
-    source: opening.source === 'ai' && ending.source === 'ai' ? 'ai' : 'offline',
-  }
+export function normalizeRoundTexts(raw: unknown): RoundTexts | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const actions = pair(r.actions).map((a) => text(a, 400)) as [string, string]
+  if (!actions[0] || !actions[1]) return null
+  const eff = pair(r.efficacy).map((e) => {
+    const n = Number(e)
+    return Number.isFinite(n) ? Math.round(Math.min(1.5, Math.max(0.6, n)) * 100) / 100 : 1
+  }) as [number, number]
+  const sfx = pair(r.sfx).map((s, i) => text(s, 14).toUpperCase() || ['SBAM!', 'KRAK!'][i]) as [string, string]
+  return { efficacy: eff, actions, sfx, ko: pair(r.ko).map((k) => text(k, 400)) as [string, string], summary: text(r.summary, 200) }
 }
 
 // ---------- narratore di riserva (senza rete o senza AI) ----------
 
 const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
-const name = (f: Fighter) => f.monster.character.name
-
-const ATTACKS = [
-  (a: Fighter, b: Fighter) => `${name(a)} afferra ${lower(a.monster.weapon.name)} e carica ${name(b)} a testa bassa.`,
-  (a: Fighter, b: Fighter) => `Con un ghigno, ${name(a)} fa roteare ${lower(a.monster.weapon.name)} e lo scaglia contro ${name(b)}.`,
-  (a: Fighter) => `${name(a)}, ${lower(a.monster.personality.name)}, annuncia la sua mossa segreta e colpisce con ${lower(a.monster.weapon.name)}.`,
-  (a: Fighter, b: Fighter) => `${name(a)} finge di arrendersi, poi sbuca alle spalle di ${name(b)} con ${lower(a.monster.weapon.name)}.`,
-  (a: Fighter) => `“Adesso basta!” urla ${name(a)}, e ${lower(a.monster.weapon.name)} parte come un missile.`,
-]
-const REACTIONS = [
-  (b: Fighter) => `${name(b)} barcolla, ma da vero ${lower(b.monster.personality.name)} rifiuta di cadere.`,
-  (b: Fighter) => `${name(b)} incassa il colpo e guarda il pubblico con aria offesa.`,
-  (b: Fighter) => `${name(b)} prova a schivare, ma inciampa nella propria dignità.`,
-  (b: Fighter) => `${name(b)} si rialza e promette vendetta.`,
-]
 const EPITHETS = ['il Terribile', 'l’Inarrestabile', 'il Leggendario', 'il Distruttore', 'il Magnifico', 'l’Implacabile']
+const SFX: Record<MoveType, string[]> = {
+  attacco: ['SBAM!', 'POW!', 'KRAK!', 'WHAM!', 'BONK!'],
+  difesa: ['CLANG!', 'TUNK!', 'DONG!'],
+  cura: ['GLU GLU', 'SLURP!', 'AAAH!'],
+  super: ['KABOOM!', 'ZAAAP!', 'BRZZZT!'],
+}
 
 export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: () => number = Math.random): Opening {
   const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)]
-  const first: Side = rand() < 0.5 ? 0 : 1
-  const raw = {
+  const name = (f: Fighter) => f.monster.character.name
+  return {
     title: `${name(fighters[0])} contro ${name(fighters[1])}`,
     intro: `Signore e signori, benvenuti: ${lower(arena.name)}. ${arena.desc} Che la rissa abbia inizio!`,
-    rounds: [first, first === 0 ? 1 : 0].map((att) => {
-      const a = fighters[att]
-      const b = fighters[att === 0 ? 1 : 0]
-      return { attacker: att, action: pick(ATTACKS)(a, b), reaction: pick(REACTIONS)(b), damage: 10 + Math.floor(rand() * 18) }
-    }),
+    nicknames: [`${name(fighters[0])} ${pick(EPITHETS)}`, `${name(fighters[1])} ${pick(EPITHETS)}`],
+    moves: [fallbackMoves(fighters[0]), fallbackMoves(fighters[1])],
+    source: 'offline',
   }
-  return normalizeOpening(raw, 'offline')!
 }
 
-export function offlineEnding(fighters: [Fighter, Fighter], arena: Card, opening: Opening, tactics: [TacticId, TacticId], rand: () => number = Math.random): Ending {
+export function offlineTexts(
+  fighters: [Fighter, Fighter],
+  opening: Opening,
+  choices: [number, number],
+  rand: () => number = Math.random,
+): RoundTexts {
   const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)]
-  const tw = clashWinner(tactics)
-  // Chi vince lo scontro di tattiche ha buone probabilità di vincere la rissa, non la certezza.
-  const winner: Side = tw !== undefined && rand() < 0.7 ? tw : rand() < 0.5 ? 0 : 1
-  const loser: Side = winner === 0 ? 1 : 0
-  const [w, l] = [fighters[winner], fighters[loser]]
-  const t = [tacticOf(tactics[0]), tacticOf(tactics[1])]
-  // Il perdente usa il potere per primo (e magari passa in vantaggio), poi round a caso, poi il KO.
-  const middle = Array.from({ length: endingRounds(rand) - 2 }, (_, i) => {
-    const att: Side = rand() < 0.5 ? 0 : 1
-    const [a, b] = [fighters[att], fighters[att === 0 ? 1 : 0]]
-    return i === 0
-      ? { attacker: att, action: `Colpo di scena: ${lower(arena.desc)} ${name(a)} ne approfitta all’istante.`, reaction: pick(REACTIONS)(b), damage: 20, twist: true }
-      : { attacker: att, action: pick(ATTACKS)(a, b), reaction: pick(REACTIONS)(b), damage: 10 + Math.floor(rand() * 20) }
-  })
-  const raw = {
-    winner,
-    clash:
-      tw === undefined
-        ? `Entrambi scelgono ${lower(t[0].name)}: lo scontro è alla pari, l’arena trema.`
-        : `${t[tw].name} contro ${lower(t[tw === 0 ? 1 : 0].name)}: ${name(fighters[tw])} legge la mossa in anticipo.`,
-    rounds: [
-      {
-        attacker: loser,
-        action: `${name(l)} usa il superpotere: ${lower(l.monster.power.name)}! ${l.monster.power.desc}`,
-        reaction: `${name(w)} vacilla, ma resta in piedi.`,
-        damage: 30,
-        power: true,
-      },
-      ...middle,
-      {
-        attacker: winner,
-        action: `${name(w)} scatena all’improvviso ${lower(w.monster.power.name)}: ${lower(w.monster.power.desc)}`,
-        reaction: `${name(l)} va al tappeto.`,
-        damage: 40,
-        power: true,
-        twist: middle.length === 0,
-      },
-    ],
-    finale: `${name(l)} non si rialza. ${name(w)} esulta sopra le macerie: ${lower(arena.name)} non sarà mai più lo stesso.`,
-    reason: `Ha sfruttato meglio ${lower(w.monster.weapon.name)} e il suo superpotere.`,
-    mvp: lower(w.monster.power.name),
-    nicknames: fighters.map((f) => `${name(f)} ${pick(EPITHETS)}`),
+  const moves = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
+  const names = fighters.map((f) => f.monster.character.name)
+  const act = (i: 0 | 1) => {
+    const m = moves[i]
+    const other = names[i === 0 ? 1 : 0]
+    switch (m.type) {
+      case 'attacco':
+        return `${names[i]} usa ${m.name} e si lancia su ${other}.`
+      case 'difesa':
+        return `${names[i]} si mette in guardia con ${m.name}.`
+      case 'cura':
+        return `${names[i]} si concede ${lower(m.name)} per rimettersi in sesto.`
+      case 'super':
+        return `${names[i]} scatena il superpotere: ${m.name}! ${m.desc}`
+    }
   }
-  return normalizeEnding(raw, hpAfter(opening), 'offline')!
+  return {
+    efficacy: [0.8 + rand() * 0.4, 0.8 + rand() * 0.4],
+    actions: [act(0), act(1)],
+    sfx: [pick(SFX[moves[0].type]), pick(SFX[moves[1].type])],
+    ko: [
+      `${names[0]} va al tappeto e non si rialza. ${names[1]} festeggia sulle macerie.`,
+      `${names[1]} va al tappeto e non si rialza. ${names[0]} festeggia sulle macerie.`,
+    ],
+    summary: baseOutcome([names[0], names[1]], [moves[0].type, moves[1].type]),
+  }
 }

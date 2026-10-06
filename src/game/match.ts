@@ -1,5 +1,5 @@
 import { ARENAS, DECKS, SLOTS, type Card, type Slot } from '../../shared/cards'
-import type { Battle, BattleRequest, Monster, Opening, Side, TacticId } from '../../shared/battle'
+import { START, blockedReason, mvpOf, type BattleRequest, type FightState, type Monster, type Opening, type RoundEnd, type RoundResult, type Side } from '../../shared/battle'
 import { Rng } from './rng'
 
 export const REROLLS_PER_ROUND = 1
@@ -28,12 +28,18 @@ export interface Gift {
 }
 
 export interface Fight {
+  /** Presentazione e mosse: arriva mentre si guarda il VS. */
   opening: Opening | null
-  /** Firma del server per chiedere la seconda parte (null se la prima è offline). */
+  /** Stato firmato dal server per il prossimo round (null = si continua col narratore di riserva). */
   token: string | null
-  tactics: [TacticId | null, TacticId | null]
-  battle: Battle | null
+  fs: FightState
+  rounds: RoundResult[]
+  /** Mosse scelte in segreto per il round in corso (indici in opening.moves). */
+  choices: [number | null, number | null]
+  end: RoundEnd | null
 }
+
+const freshFight = (): Fight => ({ opening: null, token: null, fs: START, rounds: [], choices: [null, null], end: null })
 
 export interface RoundRecord {
   round: number
@@ -46,7 +52,7 @@ export interface RoundRecord {
 }
 
 export interface MatchState {
-  version: 2
+  version: 3
   seed: number
   bestOf: number
   players: [MatchPlayer, MatchPlayer]
@@ -84,8 +90,8 @@ export type Action =
   | { type: 'confirm' }
   | { type: 'fight' }
   | { type: 'openingReady'; opening: Opening; token: string | null }
-  | { type: 'tactic'; side: Side; tactic: TacticId }
-  | { type: 'battleReady'; battle: Battle }
+  | { type: 'choose'; side: Side; move: number }
+  | { type: 'roundReady'; round: RoundResult; next: FightState; token: string | null }
   | { type: 'verdict' }
   | { type: 'nextRound' }
 
@@ -166,14 +172,14 @@ function startRound(state: MatchState, round: number, first: Side): MatchState {
     monsters: [null, null],
     arena: arena.cards[0],
     drawn: arena.drawn,
-    fight: { opening: null, token: null, tactics: [null, null], battle: null },
+    fight: freshFight(),
   }
   return enterTurn(base, 0, 'pass')
 }
 
 export function createMatch(names: [string, string], bestOf: number, seed: number): MatchState {
   const blank: MatchState = {
-    version: 2,
+    version: 3,
     seed,
     bestOf,
     players: [
@@ -195,7 +201,7 @@ export function createMatch(names: [string, string], bestOf: number, seed: numbe
     champion: false,
     monsters: [null, null],
     arena: ARENAS[0],
-    fight: { opening: null, token: null, tactics: [null, null], battle: null },
+    fight: freshFight(),
     drawn: [],
     history: [],
     phase: 'pass',
@@ -210,9 +216,15 @@ export function matchWinner(s: MatchState): Side | undefined {
   return undefined
 }
 
-/** Il prossimo giocatore che deve scegliere la tattica (chi ha aperto il round va per primo). */
-export function nextTactician(s: MatchState): Side | undefined {
-  return [s.first, other(s.first)].find((p) => s.fight.tactics[p] === null)
+/** Chi sceglie per primo la mossa in questo round: si alterna a ogni round. */
+export function roundOpener(s: MatchState): Side {
+  return s.fight.rounds.length % 2 === 0 ? s.first : other(s.first)
+}
+
+/** Il prossimo giocatore che deve scegliere la mossa, undefined se l'hanno scelta entrambi. */
+export function nextChooser(s: MatchState): Side | undefined {
+  const o = roundOpener(s)
+  return [o, other(o)].find((p) => s.fight.choices[p] === null)
 }
 
 export function reduce(state: MatchState, action: Action): MatchState {
@@ -273,32 +285,38 @@ export function reduce(state: MatchState, action: Action): MatchState {
       if ((state.phase !== 'versus' && state.phase !== 'battle') || state.fight.opening) return state
       return { ...state, fight: { ...state.fight, opening: action.opening, token: action.token } }
 
-    case 'tactic': {
-      if (state.phase !== 'battle' || !state.fight.opening || state.fight.tactics[action.side]) return state
-      const tactics: [TacticId | null, TacticId | null] = [...state.fight.tactics]
-      tactics[action.side] = action.tactic
-      return { ...state, fight: { ...state.fight, tactics } }
+    case 'choose': {
+      const f = state.fight
+      const move = f.opening?.moves[action.side][action.move]
+      if (state.phase !== 'battle' || !move || f.end || nextChooser(state) !== action.side || blockedReason(f.fs, action.side, move.type)) return state
+      const choices: [number | null, number | null] = [...f.choices]
+      choices[action.side] = action.move
+      return { ...state, fight: { ...f, choices } }
     }
 
-    case 'battleReady': {
-      if (state.phase !== 'battle' || state.fight.battle || nextTactician(state) !== undefined) return state
-      const b = action.battle
+    case 'roundReady': {
+      const f = state.fight
+      if (state.phase !== 'battle' || f.end || nextChooser(state) !== undefined) return state
+      const fight: Fight = { ...f, token: action.token, fs: action.next, rounds: [...f.rounds, action.round], choices: [null, null], end: action.round.end }
+      const end = action.round.end
+      if (!end) return { ...state, fight }
       const players: [MatchPlayer, MatchPlayer] = [{ ...state.players[0] }, { ...state.players[1] }]
-      players[b.winner].wins += 1
+      players[end.winner].wins += 1
+      const opening = f.opening as Opening
       const record: RoundRecord = {
         round: state.round,
         arena: state.arena,
         monsters: state.monsters as [Monster, Monster],
-        nicknames: b.nicknames,
-        winner: b.winner,
-        title: b.title,
-        mvp: b.mvp,
+        nicknames: opening.nicknames,
+        winner: end.winner,
+        title: opening.title,
+        mvp: mvpOf(fight.rounds, end.winner, opening),
       }
-      return { ...state, fight: { ...state.fight, battle: b }, players, history: [...state.history, record] }
+      return { ...state, fight, players, history: [...state.history, record] }
     }
 
     case 'verdict':
-      return state.phase === 'battle' && state.fight.battle ? { ...state, phase: 'verdict' } : state
+      return state.phase === 'battle' && state.fight.end ? { ...state, phase: 'verdict' } : state
 
     case 'nextRound':
       if (state.phase !== 'verdict') return state

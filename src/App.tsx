@@ -47,7 +47,9 @@ export default function App() {
   const dispatch = (a: Action) => {
     // Il bestiario si aggiorna una volta sola, quando la rissa ha un vincitore.
     const m = matchRef.current
-    if (a.type === 'battleReady' && m && m.phase === 'battle' && !m.fight.battle) recordBattle(m, a.battle)
+    const o = m?.fight.opening
+    if (a.type === 'roundReady' && a.round.end && m && o && m.phase === 'battle' && !m.fight.end)
+      recordBattle(m, { winner: a.round.end.winner, nicknames: o.nicknames, title: o.title })
     setMatch((cur) => (cur ? reduce(cur, a) : cur))
   }
 

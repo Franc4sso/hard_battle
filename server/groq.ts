@@ -1,14 +1,14 @@
 import type { Card } from '../shared/cards'
 import {
-  hpAfter,
-  normalizeEnding,
+  MOVE_INFO,
+  baseOutcome,
+  heatOf,
   normalizeOpening,
-  tacticOf,
-  type Ending,
+  normalizeRoundTexts,
+  type FightState,
   type Fighter,
   type Opening,
-  type Side,
-  type TacticId,
+  type RoundTexts,
 } from '../shared/battle'
 
 export interface AiConfig {
@@ -25,24 +25,15 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 export const DEFAULT_MODEL = 'openai/gpt-oss-120b'
 export const FALLBACK_MODEL = 'openai/gpt-oss-20b'
 
-export const SYSTEM_PROMPT = `Sei il narratore di RISSA ASSURDA, un party game in cui due giocatori costruiscono un mostro assurdo ciascuno e li fanno combattere. Tu simuli la battaglia come una telecronaca da cartone animato: esagerata, surreale, velocissima, piena di trovate. Scrivi in italiano.
+export const SYSTEM_PROMPT = `Sei il narratore e il giudice di RISSA ASSURDA, un party game in cui due giocatori costruiscono un mostro assurdo ciascuno e lo fanno combattere a turni. Racconti come una telecronaca da cartone animato: esagerata, surreale, velocissima, piena di trovate. Scrivi in italiano.
 
-REGOLE DELLA SIMULAZIONE
-- Ogni carta deve contare davvero:
-  - il PERSONAGGIO combatte con le sue caratteristiche reali o tipiche (un bradipo è lento, Einstein ragiona, una nonna siciliana minaccia col cibo);
-  - l'ARMA va usata in modi creativi e imprevisti, non solo per colpire;
-  - la PERSONALITÀ guida scelte, errori e battute;
-  - il SUPERPOTERE si usa una volta sola, nel momento decisivo. Rispetta anche il suo limite comico.
-- Le carte si combinano tra loro: l'arma di uno può interagire col potere dell'altro, una personalità può far fallire un piano. Cerca le combinazioni più divertenti. L'arena partecipa: oggetti, persone ed eventi del luogo entrano nella rissa.
-- Il vincitore NON è il più forte sulla carta: vince chi sfrutta meglio la propria combinazione, in modo sorprendente ma logico. Un piccione può battere Zeus. Nessun pareggio.
-- Ogni round: "attacker" (0 o 1) attacca e infligge "damage" all'altro. "action": la mossa dell'attaccante, 1-2 frasi concrete e visive, se possibile con una battuta tra virgolette. "reaction": la risposta dell'altro, 1 frase (battuta, contromossa o figuraccia). Vietate le frasi generiche come "si scontrano con forza" o "un colpo potente".
-- Chiama sempre i combattenti con il nome del personaggio, non con il nome del giocatore.
-- "sfx": un'onomatopea da fumetto in maiuscolo, massimo 12 caratteri, diversa a ogni round.
-- Le battute devono far ridere davvero e avere senso nel contesto: meglio una frase in meno che una battuta senza logica. Giochi di parole sulle carte sono benvenuti.
+STILE
+- Ogni carta conta: il PERSONAGGIO agisce secondo le sue caratteristiche reali o tipiche, l'ARMA si usa in modi creativi e imprevisti, la PERSONALITÀ guida scelte, errori e battute, il SUPERPOTERE ha anche il suo limite comico. L'arena partecipa: oggetti, persone ed eventi del luogo entrano nella rissa.
+- Frasi concrete e visive, se possibile con una battuta tra virgolette. Vietate le frasi generiche come "si scontrano con forza" o "un colpo potente".
+- Chiama i combattenti con il nome del personaggio, non con il nome del giocatore.
+- Le battute devono far ridere davvero e avere senso nel contesto. Giochi di parole sulle carte sono benvenuti.
 - Comicità slapstick da cartone, adatta a tutti: niente sangue, niente sesso, niente parolacce, niente insulti a gruppi di persone.
 - Rispondi SOLO con un oggetto JSON valido, nella forma richiesta.`
-
-const ROUND_SHAPE = '{"attacker":0,"action":"...","reaction":"...","sfx":"SBAM!","damage":20,"power":false,"twist":false}'
 
 function describe(f: Fighter, i: number): string {
   const m = f.monster
@@ -61,56 +52,57 @@ const setup = (f: [Fighter, Fighter], arena: Card) =>
 export function openingPrompt(f: [Fighter, Fighter], arena: Card): string {
   return `${setup(f, arena)}
 
-PRIMA PARTE DELLA RISSA. Scrivi il titolo, la presentazione e i PRIMI 2 ROUND (uno a testa, nell'ordine che preferisci).
-- Nessuno va KO e nessuno usa ancora il superpotere ("power": false). "damage" tra 5 e 30.
-- Il round 2 deve chiudersi con una situazione di tensione o di stallo: subito dopo i giocatori sceglieranno di nascosto una tattica.
-- "title": il titolo dell'incontro come un film, max 50 caratteri. "intro": il presentatore apre l'incontro descrivendo l'arena, 1-2 frasi.
-Forma: {"title":"...","intro":"...","rounds":[${ROUND_SHAPE}]}`
+PRESENTAZIONE DELLA RISSA. Scrivi:
+- "title": il titolo dell'incontro come un film, max 50 caratteri.
+- "intro": il presentatore apre l'incontro descrivendo l'arena, 1-2 frasi.
+- "nicknames": un soprannome epico e buffo per ciascun combattente, nell'ordine 0 e 1, max 4 parole (es. "Il Flagello di IKEA").
+- "moves": per ciascun combattente ESATTAMENTE 4 mosse, in quest'ordine di tipo: attacco, difesa, cura, super.
+  - attacco: nasce dall'arma; difesa e cura: nascono dalla personalità e dal personaggio; super: è il suo superpotere.
+  - "name": max 4 parole, buffo e specifico per le sue carte (mai generico come "Pugno" o "Scudo").
+  - "desc": cosa fa, max 12 parole.
+Forma: {"title":"...","intro":"...","nicknames":["...","..."],"moves":[[{"type":"attacco","name":"...","desc":"..."},{"type":"difesa","name":"...","desc":"..."},{"type":"cura","name":"...","desc":"..."},{"type":"super","name":"...","desc":"..."}],[...]]}`
 }
 
-export function endingPrompt(f: [Fighter, Fighter], arena: Card, opening: Opening, tactics: [TacticId, TacticId], count: number): string {
-  const story = opening.rounds
-    .map((r, i) => `Round ${i + 1}: attacca ${f[r.attacker].monster.character.name}. ${r.action} ${r.reaction}`)
-    .join('\n')
-  const hp = hpAfter(opening)
-  const t = tactics.map(tacticOf)
+export function roundPrompt(
+  f: [Fighter, Fighter],
+  arena: Card,
+  opening: Opening,
+  fs: FightState,
+  log: string[],
+  choices: [number, number],
+): string {
+  const names: [string, string] = [f[0].monster.character.name, f[1].monster.character.name]
+  const moves = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
+  const story = log.length ? log.map((s) => `- ${s}`).join('\n') : '- (è il primo round)'
   return `${setup(f, arena)}
 
-FINORA (titolo: "${opening.title}"):
+TITOLO: "${opening.title}". FINORA:
 ${story}
-Punti vita attuali: ${f[0].monster.character.name} ${hp[0]}, ${f[1].monster.character.name} ${hp[1]}.
 
-TATTICHE SEGRETE scelte dai giocatori:
-- ${f[0].monster.character.name} (COMBATTENTE 0): ${t[0].name}. ${t[0].desc}
-- ${f[1].monster.character.name} (COMBATTENTE 1): ${t[1].name}. ${t[1].desc}
-Regole: Attacco totale batte Trucco sporco, Trucco sporco batte Difesa di ferro, Difesa di ferro batte Attacco totale; stessa tattica = scontro alla pari. Chi vince lo scontro di tattiche ottiene un grosso vantaggio nel round successivo, ma il vincitore finale dipende da tutta la storia e dalle carte.
-
-SECONDA PARTE DELLA RISSA. Scrivi:
-- "clash": 1-2 frasi spettacolari su come si scontrano le due tattiche.
-- ESATTAMENTE ${count} ROUND FINALI: ognuno usa il proprio superpotere al massimo una volta ("power": true), almeno un colpo di scena con l'arena ("twist": true), l'ultimo round è il KO sferrato dal vincitore. "damage" tra 10 e 40.
-- Suspense: il vincitore non deve essere prevedibile. Alterna i vantaggi e, spesso, fai rimontare chi vince: può essere in svantaggio di punti vita fino al penultimo round.
-- "finale": il KO e cosa succede dopo, 2 frasi. "reason": perché ha vinto, 1 frase. "mvp": la mossa migliore DEL VINCITORE, max 8 parole.
-- "nicknames": un soprannome epico e buffo per ciascun combattente, nell'ordine 0 e 1, max 4 parole (es. "Il Flagello di IKEA").
-Forma: {"clash":"...","rounds":[${ROUND_SHAPE}],"finale":"...","winner":0,"reason":"...","mvp":"...","nicknames":["...","..."]}`
-}
-
-async function askGroq(user: string, cfg: AiConfig): Promise<Record<string, unknown>> {
-  try {
-    return await askModel(user, cfg, cfg.model || DEFAULT_MODEL)
-  } catch (e) {
-    // Piano gratuito: superato il limite di token al minuto del modello grande,
-    // si riprova subito con quello piccolo, che ha un limite separato.
-    const fallback = cfg.fallbackModel ?? FALLBACK_MODEL
-    if (e instanceof RateLimitError && fallback && fallback !== (cfg.model || DEFAULT_MODEL)) return askModel(user, cfg, fallback)
-    throw e
+ROUND ${fs.round + 1}. Punti vita: ${names[0]} ${fs.hp[0]}, ${names[1]} ${fs.hp[1]} (su 100).${
+    heatOf(fs.round + 1) > 1 ? ' LA RISSA SI STA SCALDANDO: i colpi fanno molto più male, racconta un crescendo di furia.' : ''
   }
+MOSSE SCELTE IN SEGRETO, NELLO STESSO MOMENTO:
+- ${names[0]} (COMBATTENTE 0): "${moves[0].name}" [${MOVE_INFO[moves[0].type].label}] ${moves[0].desc}
+- ${names[1]} (COMBATTENTE 1): "${moves[1].name}" [${MOVE_INFO[moves[1].type].label}] ${moves[1].desc}
+ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, [moves[0].type, moves[1].type])}
+
+Il tuo compito, da giudice e da narratore:
+- "efficacy": per ciascuno un numero da 0.6 a 1.5: quanto la sua mossa funziona davvero contro quella dell'altro, considerando carte, personalità, arena e momento. 1 = normale. Premia le mosse azzeccate e le combinazioni furbe, punisci quelle che si ritorcono contro. Sii imprevedibile ma logico.
+- "actions": per ciascuno 1-2 frasi su cosa fa con la sua mossa e come va a finire, coerenti con l'esito di base e con l'efficacia che hai dato (alta = effetto spettacolare, bassa = figuraccia).
+  - Racconta SOLO la mossa scelta: chi non ha scelto il superpotere non lo usa, chi si difende non attacca.
+  - Niente numeri di punti vita o di danni: quelli li mostra il gioco.
+- "sfx": un'onomatopea da fumetto in maiuscolo per ciascuno, max 12 caratteri.
+- "ko": OBBLIGATORIO, una lista di due frasi finali (2 frasi ciascuna): la prima da usare SE crolla il combattente 0, la seconda SE crolla il combattente 1. Il KO, spettacolare e legato alle mosse di questo round, e cosa succede dopo.
+- "summary": 1 frase che riassume il round, per ricordarlo nei round successivi.
+Forma: {"efficacy":[1,1],"actions":["...","..."],"sfx":["...","..."],"ko":["...","..."],"summary":"..."}`
 }
 
 class RateLimitError extends Error {}
 
 async function askModel(user: string, cfg: AiConfig, model: string): Promise<Record<string, unknown>> {
   const doFetch = cfg.fetch ?? fetch
-  // I gpt-oss ragionano prima di rispondere: più ragionamento = battaglia più curata ma più lenta.
+  // I gpt-oss ragionano prima di rispondere: più ragionamento = più curato ma più lento.
   const reasoning = model.startsWith('openai/gpt-oss') ? { reasoning_effort: cfg.reasoning || 'low' } : {}
   const res = await doFetch(GROQ_URL, {
     method: 'POST',
@@ -119,7 +111,7 @@ async function askModel(user: string, cfg: AiConfig, model: string): Promise<Rec
       model,
       ...reasoning,
       temperature: 1,
-      max_tokens: 3000,
+      max_tokens: 2500,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -133,6 +125,18 @@ async function askModel(user: string, cfg: AiConfig, model: string): Promise<Rec
   }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
   return JSON.parse(data.choices?.[0]?.message?.content ?? '') as Record<string, unknown>
+}
+
+async function askGroq(user: string, cfg: AiConfig): Promise<Record<string, unknown>> {
+  try {
+    return await askModel(user, cfg, cfg.model || DEFAULT_MODEL)
+  } catch (e) {
+    // Piano gratuito: superato il limite di token al minuto del modello grande,
+    // si riprova subito con quello piccolo, che ha un limite separato.
+    const fallback = cfg.fallbackModel ?? FALLBACK_MODEL
+    if (e instanceof RateLimitError && fallback && fallback !== (cfg.model || DEFAULT_MODEL)) return askModel(user, cfg, fallback)
+    throw e
+  }
 }
 
 /** Due tentativi: il secondo se la risposta non è valida o la rete fa i capricci. */
@@ -151,43 +155,40 @@ async function retry<T>(fn: () => Promise<T | null>): Promise<T> {
 
 /*
  * L'ordine dei combattenti viene mescolato a caso (i modelli tendono a favorire
- * chi è scritto per primo): `swap` dice se l'AI li vede invertiti. Le risposte
- * vengono rimesse nell'ordine dell'app prima di normalizzarle.
+ * chi è scritto per primo): `swap` dice se l'AI li vede invertiti. Le coppie di
+ * valori nelle risposte vengono rimesse nell'ordine dell'app.
  */
-const flip = (s: unknown): unknown => (s === 0 || s === 1 || s === '0' || s === '1' ? 1 - Number(s) : s)
 const ordered = <T>(pair: [T, T], swap: boolean): [T, T] => (swap ? [pair[1], pair[0]] : pair)
-
-function unswapRounds(raw: Record<string, unknown>) {
-  if (Array.isArray(raw.rounds))
-    raw.rounds = raw.rounds.map((r) => (r && typeof r === 'object' ? { ...r, attacker: flip((r as Record<string, unknown>).attacker) } : r))
+const flipPairs = (raw: Record<string, unknown>, keys: string[]) => {
+  for (const k of keys) if (Array.isArray(raw[k])) raw[k] = [(raw[k] as unknown[])[1], (raw[k] as unknown[])[0]]
 }
 
 export function generateOpening(fighters: [Fighter, Fighter], arena: Card, swap: boolean, cfg: AiConfig): Promise<Opening> {
   return retry(async () => {
     const raw = await askGroq(openingPrompt(ordered(fighters, swap), arena), cfg)
-    if (swap) unswapRounds(raw)
-    return normalizeOpening(raw, 'ai')
+    if (swap) flipPairs(raw, ['nicknames', 'moves'])
+    return normalizeOpening(raw, fighters, 'ai')
   })
 }
 
-export function generateEnding(
+export function generateRound(
   fighters: [Fighter, Fighter],
   arena: Card,
   swap: boolean,
   opening: Opening,
-  tactics: [TacticId, TacticId],
-  count: number,
+  fs: FightState,
+  log: string[],
+  choices: [number, number],
   cfg: AiConfig,
-): Promise<Ending> {
-  // La prima parte è salvata nell'ordine dell'app: per il prompt va girata come la vede l'AI.
-  const seen: Opening = swap ? { ...opening, rounds: opening.rounds.map((r) => ({ ...r, attacker: (1 - r.attacker) as Side, hp: [r.hp[1], r.hp[0]] })) } : opening
+): Promise<RoundTexts> {
+  // Tutto ciò che è a coppie va girato come lo vede l'AI.
+  const seen: Opening = swap ? { ...opening, nicknames: ordered(opening.nicknames, true), moves: ordered(opening.moves, true) } : opening
+  const seenFs: FightState = swap
+    ? { ...fs, hp: ordered(fs.hp, true), superUsed: ordered(fs.superUsed, true), lastType: ordered(fs.lastType, true) }
+    : fs
   return retry(async () => {
-    const raw = await askGroq(endingPrompt(ordered(fighters, swap), arena, seen, ordered(tactics, swap), count), cfg)
-    if (swap) {
-      unswapRounds(raw)
-      raw.winner = flip(raw.winner)
-      if (Array.isArray(raw.nicknames)) raw.nicknames = [raw.nicknames[1], raw.nicknames[0]]
-    }
-    return normalizeEnding(raw, hpAfter(opening), 'ai')
+    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, seen, seenFs, log, ordered(choices, swap)), cfg)
+    if (swap) flipPairs(raw, ['efficacy', 'actions', 'sfx', 'ko'])
+    return normalizeRoundTexts(raw)
   })
 }

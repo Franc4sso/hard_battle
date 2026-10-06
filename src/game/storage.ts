@@ -1,7 +1,7 @@
 import type { MatchState } from './match'
 
-// v2: sabotaggio e tattiche, le partite salvate prima non sono compatibili.
-const MATCH_KEY = 'rissa:match:v2'
+// v3: rissa a turni con le mosse, le partite salvate prima non sono compatibili.
+const MATCH_KEY = 'rissa:match:v3'
 const PREFS_KEY = 'rissa:prefs:v1'
 
 export interface Prefs {
@@ -32,7 +32,7 @@ function write(key: string, value: unknown) {
 
 export const loadMatch = (): MatchState | undefined => {
   const m = read<MatchState>(MATCH_KEY)
-  return m?.version === 2 ? m : undefined
+  return m?.version === 3 ? m : undefined
 }
 export const saveMatch = (m: MatchState | undefined) => write(MATCH_KEY, m)
 

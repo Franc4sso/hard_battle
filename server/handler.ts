@@ -1,6 +1,16 @@
 import { deckOf, findCard, type Card, type Slot } from '../shared/cards'
-import { endingRounds, isTactic, type BattleRequest, type Fighter, type Monster, type Opening, type TacticId } from '../shared/battle'
-import { generateEnding, generateOpening, type AiConfig } from './groq'
+import {
+  START,
+  blockedReason,
+  playRound,
+  type BattleRequest,
+  type FightState,
+  type Fighter,
+  type Monster,
+  type Opening,
+  type Side,
+} from '../shared/battle'
+import { generateOpening, generateRound, type AiConfig } from './groq'
 import { sign, verify } from './token'
 
 export interface HandlerResult {
@@ -9,20 +19,29 @@ export interface HandlerResult {
 }
 
 export interface HandlerConfig extends Partial<AiConfig> {
-  /** Chiave per firmare la prima parte; se manca si usa la chiave Groq. */
+  /** Chiave per firmare lo stato della rissa; se manca si usa la chiave Groq. */
   secret?: string
   rand?: () => number
 }
 
-/** Cosa viaggia firmato tra la prima e la seconda parte. */
-interface OpeningToken {
-  v: 1
+/**
+ * Netlify non ha un database: lo stato della rissa viaggia firmato tra server e
+ * telefono a ogni round. La firma impedisce di modificarlo (niente testo
+ * arbitrario nel prompt, niente punti vita truccati).
+ */
+interface FightToken {
+  v: 2
   req: BattleRequest
   swap: boolean
   opening: Opening
+  fs: FightState
+  /** Riassunti degli ultimi round, per dare memoria all'AI. */
+  log: string[]
+  done: boolean
 }
 
 const SLOT_KEYS: Slot[] = ['character', 'weapon', 'personality', 'power']
+const LOG_SIZE = 4
 
 function cleanName(v: unknown, fallback: string): string {
   const s = typeof v === 'string' ? v.replace(/[\u0000-\u001f<>{}"]/g, '').trim().slice(0, 20) : ''
@@ -60,15 +79,25 @@ export function parseRequest(body: unknown): { fighters: [Fighter, Fighter]; are
   return { fighters: pair, arena, req: { arena: arena.id, fighters: [ids(pair[0]), ids(pair[1])] } }
 }
 
+function parseChoices(v: unknown, t: FightToken): [number, number] | undefined {
+  if (!Array.isArray(v) || v.length !== 2) return undefined
+  for (const [side, c] of v.entries()) {
+    const move = Number.isInteger(c) ? t.opening.moves[side][c as number] : undefined
+    if (!move || blockedReason(t.fs, side as Side, move.type)) return undefined
+  }
+  return v as [number, number]
+}
+
 /**
  * POST /api/battle
  * - { stage: "opening", arena, fighters } → { opening, token }
- * - { stage: "ending", token, tactics: [t0, t1] } → { ending }
+ * - { stage: "round", token, choices: [mossa0, mossa1] } → { round, token }
  */
 export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Promise<HandlerResult> {
   if (!cfg.apiKey) return { status: 503, body: { error: 'missing_key' } }
   const ai: AiConfig = { ...cfg, apiKey: cfg.apiKey }
   const secret = cfg.secret || cfg.apiKey
+  const rand = cfg.rand ?? Math.random
   let body: Record<string, unknown>
   try {
     body = JSON.parse(raw) as Record<string, unknown>
@@ -77,22 +106,24 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
   }
 
   try {
-    if (body?.stage === 'ending') {
-      const payload = verify<OpeningToken>(body.token, secret)
-      const parsed = payload?.v === 1 ? parseRequest(payload.req) : undefined
-      const t = body.tactics
-      if (!payload || !parsed || !Array.isArray(t) || t.length !== 2 || !isTactic(t[0]) || !isTactic(t[1]))
-        return { status: 400, body: { error: 'bad_request' } }
-      const count = endingRounds(cfg.rand ?? Math.random)
-      const ending = await generateEnding(parsed.fighters, parsed.arena, payload.swap, payload.opening, t as [TacticId, TacticId], count, ai)
-      return { status: 200, body: { ending } }
+    if (body?.stage === 'round') {
+      const t = verify<FightToken>(body.token, secret)
+      const parsed = t?.v === 2 && !t.done ? parseRequest(t.req) : undefined
+      const choices = t && parsed ? parseChoices(body.choices, t) : undefined
+      if (!t || !parsed || !choices) return { status: 400, body: { error: 'bad_request' } }
+      const texts = await generateRound(parsed.fighters, parsed.arena, t.swap, t.opening, t.fs, t.log, choices, ai)
+      const types = [t.opening.moves[0][choices[0]].type, t.opening.moves[1][choices[1]].type] as const
+      const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
+      const { round, next } = playRound(t.fs, choices, [types[0], types[1]], texts, names, rand)
+      const token = sign({ ...t, fs: next, log: [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE), done: !!round.end }, secret)
+      return { status: 200, body: { round, token } }
     }
 
     const parsed = parseRequest(body)
     if (!parsed) return { status: 400, body: { error: 'bad_request' } }
-    const swap = (cfg.rand ?? Math.random)() < 0.5
+    const swap = rand() < 0.5
     const opening = await generateOpening(parsed.fighters, parsed.arena, swap, ai)
-    const token = sign({ v: 1, req: parsed.req, swap, opening } satisfies OpeningToken, secret)
+    const token = sign({ v: 2, req: parsed.req, swap, opening, fs: START, log: [], done: false } satisfies FightToken, secret)
     return { status: 200, body: { opening, token } }
   } catch (e) {
     console.error('[battle]', e)

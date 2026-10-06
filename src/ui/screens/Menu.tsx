@@ -4,8 +4,8 @@ import { Button, Footer, anim } from '../components'
 
 const STEPS: [string, string][] = [
   ['Sabota e crea', 'Scegli una carta-trappola per l’avversario, poi costruisci il tuo mostro tra carte a caso.'],
-  ['Tattica segreta', 'A metà rissa ognuno sceglie di nascosto: attacco, difesa o trucco sporco.'],
-  ['L’AI decide', 'La rissa viene simulata round per round. I mostri finiscono nel bestiario.'],
+  ['Mosse segrete', 'Ogni mostro ha 4 mosse: attacco, difesa, cura, superpotere. A ogni round le scegliete di nascosto.'],
+  ['L’AI giudica', 'Valuta ogni scontro e lo racconta. Chi crolla perde, e i mostri finiscono nel bestiario.'],
 ]
 
 export function HomeScreen({ canResume, onNew, onResume, onBestiary }: { canResume: boolean; onNew(): void; onResume(): void; onBestiary(): void }) {

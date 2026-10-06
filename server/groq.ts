@@ -13,6 +13,7 @@ import {
   heatOf,
   normalizeOpening,
   normalizeRoundTexts,
+  playRound,
   type FightState,
   type Fighter,
   type Move,
@@ -121,6 +122,13 @@ export function roundPrompt(
   const names: [string, string] = [f[0].monster.character.name, f[1].monster.character.name]
   const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
   const story = log.length ? log.map((s) => `- ${s}`).join('\n') : '- (è il primo round)'
+  // Prova del round con le regole vere: l'AI deve raccontare solo gli effetti che scattano davvero.
+  const neutral: RoundTexts = { efficacy: [1, 1], actions: ['', ''], sfx: ['', ''], ko: ['', ''], verdicts: ['', ''], summary: '' }
+  const dry = playRound(fs, choices, moves, neutral, names, () => 0.5, event?.rule).round
+  const triggered = ([0, 1] as const)
+    .map((i) => (dry.notes[i].length ? `${names[i]}: ${dry.notes[i].join(', ').toLowerCase()}` : ''))
+    .filter(Boolean)
+    .join('; ')
   const states = ([0, 1] as const)
     .map((i) => statusText(names[i], fs.status?.[i], fs.rage?.[i] ?? 0, fs.desperateUsed?.[i] ?? false))
     .filter(Boolean)
@@ -136,7 +144,8 @@ ROUND ${fs.round + 1}. Punti vita: ${names[0]} ${fs.hp[0]}, ${names[1]} ${fs.hp[
 MOSSE SCELTE IN SEGRETO, NELLO STESSO MOMENTO:
 - ${names[0]} (COMBATTENTE 0): "${moves[0].name}" [${label(moves[0])}] ${moves[0].desc}
 - ${names[1]} (COMBATTENTE 1): "${moves[1].name}" [${label(moves[1])}] ${moves[1].desc}
-ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, moves)}${
+ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, moves)}
+EFFETTI CHE SCATTANO DAVVERO: ${triggered || 'nessuno'}. Gli altri effetti scritti sulle mosse NON scattano in questo round: non raccontarli.${
     event ? `\nEVENTO DELL'ARENA IN QUESTO ROUND: ${EVENT_RULES[event.rule].title}. ${event.text} Regola: ${EVENT_RULES[event.rule].rule} Fallo pesare nel racconto.` : ''
   }
 

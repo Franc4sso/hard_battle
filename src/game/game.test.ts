@@ -546,7 +546,15 @@ describe('server', () => {
     { type: 'difesa', force: 2, name: `d${p}` },
     { type: 'super', name: `s${p}` },
   ]
-  const openingAnswer = { title: 'Titolo', nicknames: ['Primo', 'Secondo'], moves: [kit('0'), kit('1')] }
+  const openingAnswer = {
+    title: 'Titolo',
+    nicknames: ['Primo', 'Secondo'],
+    moves: [kit('0'), kit('1')],
+    desperate: [
+      { name: 'Disperata0', desc: 'x' },
+      { name: 'Disperata1', desc: 'y' },
+    ],
+  }
 
   it('rimette a posto tutte le coppie se ha invertito l’ordine', async () => {
     const f = fighters()
@@ -563,6 +571,8 @@ describe('server', () => {
     expect(lastSent.messages[1].content).toContain('round 2: Furia')
     expect(o.nicknames).toEqual(['Secondo', 'Primo'])
     expect(o.moves[0][0].name).toBe('a1')
+    // Anche la mossa disperata segue il suo combattente.
+    expect(o.moves[0][4].name).toBe('Disperata1')
     // Eventi: calendario del server, scena dell'AI (o di riserva se manca).
     expect(o.events.map((e) => [e.round, e.rule])).toEqual([
       [2, 'furia'],

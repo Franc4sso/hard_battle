@@ -52,7 +52,7 @@ export interface RoundRecord {
 }
 
 export interface MatchState {
-  version: 3
+  version: 4
   seed: number
   bestOf: number
   players: [MatchPlayer, MatchPlayer]
@@ -181,7 +181,7 @@ function startRound(state: MatchState, round: number, first: Side): MatchState {
 
 export function createMatch(names: [string, string], bestOf: number, seed: number): MatchState {
   const blank: MatchState = {
-    version: 3,
+    version: 4,
     seed,
     bestOf,
     players: [

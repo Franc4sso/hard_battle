@@ -152,7 +152,13 @@ Il tuo compito, da giudice e da narratore:
 Forma: {"efficacy":[1.3,0.8],"verdicts":["...","..."],"actions":["...","..."],"sfx":["...","..."],"ko":["...","..."],"summary":"..."}`
 }
 
-class RateLimitError extends Error {}
+class RateLimitError extends Error {
+  /** Secondi suggeriti da Groq prima di riprovare. */
+  retryAfter = Infinity
+}
+
+/** Se Groq chiede di aspettare poco, conviene aspettare invece di arrendersi. */
+const MAX_WAIT_S = 6
 
 async function askModel(user: string, cfg: AiConfig, model: string): Promise<Record<string, unknown>> {
   const doFetch = cfg.fetch ?? fetch
@@ -174,16 +180,31 @@ async function askModel(user: string, cfg: AiConfig, model: string): Promise<Rec
     }),
   })
   if (!res.ok) {
-    const msg = `Groq ${res.status} (${model}): ${(await res.text()).slice(0, 300)}`
-    throw res.status === 429 ? new RateLimitError(msg) : new Error(msg)
+    const body = await res.text()
+    const msg = `Groq ${res.status} (${model}): ${body.slice(0, 300)}`
+    if (res.status !== 429) throw new Error(msg)
+    const err = new RateLimitError(msg)
+    const hinted = Number(res.headers.get('retry-after') ?? body.match(/try again in ([\d.]+)s/)?.[1])
+    if (Number.isFinite(hinted)) err.retryAfter = hinted
+    throw err
   }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
   return JSON.parse(data.choices?.[0]?.message?.content ?? '') as Record<string, unknown>
 }
 
 async function askGroq(user: string, cfg: AiConfig): Promise<Record<string, unknown>> {
+  const main = cfg.model || DEFAULT_MODEL
   try {
-    return await askModel(user, cfg, cfg.model || DEFAULT_MODEL)
+    try {
+      return await askModel(user, cfg, main)
+    } catch (e) {
+      // Limite al minuto quasi libero: un attimo di pazienza e si riprova con lo stesso modello.
+      if (e instanceof RateLimitError && e.retryAfter <= MAX_WAIT_S) {
+        await new Promise((r) => setTimeout(r, e.retryAfter * 1000 + 250))
+        return await askModel(user, cfg, main)
+      }
+      throw e
+    }
   } catch (e) {
     // Piano gratuito: superato il limite di token al minuto del modello grande,
     // si riprova subito con quello piccolo, che ha un limite separato.
@@ -226,7 +247,7 @@ export function generateOpening(
 ): Promise<Opening> {
   return retry(async () => {
     const raw = await askGroq(openingPrompt(ordered(fighters, swap), arena, schedule), cfg)
-    if (swap) flipPairs(raw, ['nicknames', 'moves'])
+    if (swap) flipPairs(raw, ['nicknames', 'moves', 'desperate'])
     return normalizeOpening(raw, fighters, 'ai', buildEvents(schedule, arena, raw.events))
   })
 }

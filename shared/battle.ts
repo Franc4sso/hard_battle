@@ -157,9 +157,9 @@ export const MAX_ROUNDS = 8
 /** Danni da incassare per riempire la barra della rimonta. */
 export const RAGE_MAX = 60
 
-const ATTACK = 26
-const SUPER = 40
-const DESPERATE = 36
+const ATTACK = 23
+const SUPER = 36
+const DESPERATE = 34
 const HEAL = 14
 /** Superpotere curativo: tanta vita, e intanto para come una difesa forte. */
 const SUPER_HEAL = 30
@@ -179,7 +179,7 @@ const BLOCK: Record<'attacco' | 'super', Record<Force, number>> = {
 
 /** Più la rissa va avanti più si scalda: i colpi (non le cure) fanno sempre più male. */
 export function heatOf(roundNo: number): number {
-  return roundNo <= 2 ? 1 : roundNo <= 4 ? 1.3 : 1.7
+  return roundNo <= 2 ? 1 : roundNo <= 4 ? 1.25 : 1.6
 }
 
 /** Stato di un combattente che passa da un round all'altro. */

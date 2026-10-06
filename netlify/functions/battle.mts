@@ -5,6 +5,7 @@ export default async (req: Request): Promise<Response> => {
   const out = await handleBattleRequest(await req.text(), {
     apiKey: process.env.GROQ_API_KEY,
     model: process.env.GROQ_MODEL,
+    reasoning: process.env.GROQ_REASONING,
   })
   return Response.json(out.body, { status: out.status })
 }

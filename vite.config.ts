@@ -18,15 +18,22 @@ function devBattleApi(mode: string): Plugin {
           res.end()
           return
         }
-        const chunks: Buffer[] = []
-        for await (const chunk of req) chunks.push(chunk as Buffer)
-        // Letta a ogni richiesta: si può aggiungere la chiave senza riavviare.
-        const env = loadEnv(mode, server.config.root, '')
-        const { handleBattleRequest } = await server.ssrLoadModule('/server/handler.ts')
-        const out = await handleBattleRequest(Buffer.concat(chunks).toString('utf8'), {
-          apiKey: env.GROQ_API_KEY,
-          model: env.GROQ_MODEL,
-        })
+        // Un errore qui non deve mai far cadere il dev server.
+        let out: { status: number; body: unknown } = { status: 500, body: { error: 'dev_server' } }
+        try {
+          const chunks: Buffer[] = []
+          for await (const chunk of req) chunks.push(chunk as Buffer)
+          // Letta a ogni richiesta: si può cambiare chiave o modello senza riavviare.
+          const env = loadEnv(mode, server.config.root, '')
+          const { handleBattleRequest } = await server.ssrLoadModule('/server/handler.ts')
+          out = await handleBattleRequest(Buffer.concat(chunks).toString('utf8'), {
+            apiKey: env.GROQ_API_KEY,
+            model: env.GROQ_MODEL,
+            reasoning: env.GROQ_REASONING,
+          })
+        } catch (e) {
+          console.error('[dev-battle-api]', e)
+        }
         res.statusCode = out.status
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify(out.body))

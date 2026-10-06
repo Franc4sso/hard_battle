@@ -4,13 +4,15 @@ import { normalizeBattle, type Battle, type Fighter } from '../shared/battle'
 export interface AiConfig {
   apiKey: string
   model?: string
+  /** low | medium | high, solo per i modelli che ragionano. */
+  reasoning?: string
   fetch?: typeof fetch
   /** Per i test: decide se invertire l'ordine dei combattenti. */
   rand?: () => number
 }
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
-export const DEFAULT_MODEL = 'llama-3.3-70b-versatile'
+export const DEFAULT_MODEL = 'openai/gpt-oss-120b'
 
 export const SYSTEM_PROMPT = `Sei il narratore di RISSA ASSURDA, un party game in cui due giocatori costruiscono un mostro assurdo ciascuno e li fanno combattere. Tu simuli la battaglia come una telecronaca da cartone animato: esagerata, surreale, velocissima, piena di trovate. Scrivi in italiano.
 
@@ -27,7 +29,8 @@ REGOLE DELLA SIMULAZIONE
 - "action": la mossa dell'attaccante, 1-2 frasi concrete e visive, se possibile con una battuta tra virgolette. "reaction": la risposta dell'altro, 1 frase (battuta, contromossa o figuraccia). Vietate le frasi generiche come "si scontrano con forza" o "un colpo potente".
 - Chiama sempre i combattenti con il nome del personaggio, non con il nome del giocatore.
 - "sfx": un'onomatopea da fumetto in maiuscolo, massimo 12 caratteri, diversa a ogni round.
-- Comicità slapstick da cartone: niente sangue, niente sesso, niente insulti a gruppi di persone.
+- Le battute devono far ridere davvero e avere senso nel contesto: meglio una frase in meno che una battuta senza logica. Giochi di parole sulle carte sono benvenuti.
+- Comicità slapstick da cartone, adatta a tutti: niente sangue, niente sesso, niente parolacce, niente insulti a gruppi di persone.
 - "title": il titolo dell'incontro come un film, max 50 caratteri. "intro": il presentatore apre l'incontro descrivendo l'arena, 1-2 frasi. "finale": il KO e cosa succede dopo, 2 frasi. "reason": perché ha vinto, 1 frase. "mvp": la mossa migliore, max 8 parole.
 
 Rispondi SOLO con un oggetto JSON valido, con questa forma esatta:
@@ -54,6 +57,10 @@ export function userPrompt(fighters: [Fighter, Fighter], arena: Card): string {
  */
 export async function generateBattle(fighters: [Fighter, Fighter], arena: Card, cfg: AiConfig): Promise<Battle> {
   const doFetch = cfg.fetch ?? fetch
+  const model = cfg.model || DEFAULT_MODEL
+  // I gpt-oss ragionano prima di rispondere: più ragionamento = battaglia più curata ma più lenta
+  // (medium ≈ 15 s, oltre il limite di 10 s delle funzioni Netlify gratuite; low ≈ 4 s).
+  const reasoning = model.startsWith('openai/gpt-oss') ? { reasoning_effort: cfg.reasoning || 'low' } : {}
   const swap = (cfg.rand ?? Math.random)() < 0.5
   const ordered: [Fighter, Fighter] = swap ? [fighters[1], fighters[0]] : fighters
   const unswap = (s: unknown): unknown => (swap && (s === 0 || s === 1 || s === '0' || s === '1') ? 1 - Number(s) : s)
@@ -65,9 +72,10 @@ export async function generateBattle(fighters: [Fighter, Fighter], arena: Card, 
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
         body: JSON.stringify({
-          model: cfg.model || DEFAULT_MODEL,
+          model,
+          ...reasoning,
           temperature: 1,
-          max_tokens: 2500,
+          max_tokens: 4000,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },

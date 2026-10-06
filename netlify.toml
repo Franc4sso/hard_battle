@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# /api/battle è servita dalla funzione netlify/functions/battle.mts (config.path),
+# che ha la precedenza su questo fallback della SPA.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

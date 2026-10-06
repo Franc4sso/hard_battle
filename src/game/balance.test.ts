@@ -61,8 +61,6 @@ function value(me: Side, fs: FightState, mine: Move, theirs: Move): number {
   if (mine.fx === 'scudo') v += 6
   if (mine.fx === 'brucia' && fx.dealt[me] > 0) v += 8
   if (mine.fx === 'stordisce' && (fx.dealt[me] > 0 || mine.type === 'difesa')) v += 6
-  // Il superpotere si spreca se usato troppo presto.
-  if (mine.type === 'super' && fs.round < 2) v -= 10
   return v
 }
 
@@ -180,8 +178,9 @@ describe('bilanciamento (bot contro bot)', () => {
   })
 
   it('nessuna strategia "a testa bassa" è imbattibile', () => {
-    expect(rate('furbo', 'aggro')).toBeGreaterThan(0.5)
-    expect(rate('furbo', 'tartaruga')).toBeGreaterThan(0.5)
+    // Chi ragiona (il migliore dei due bot pensanti) batte chi picchia sempre e chi si chiude sempre.
+    expect(Math.max(rate('furbo', 'aggro'), rate('lettore', 'aggro'))).toBeGreaterThan(0.58)
+    expect(Math.max(rate('furbo', 'tartaruga'), rate('lettore', 'tartaruga'))).toBeGreaterThan(0.58)
     // Picchiare sempre o chiudersi sempre: nessuno dei due stravince sull'altro.
     expect(rate('aggro', 'tartaruga')).toBeGreaterThan(0.3)
     expect(rate('aggro', 'tartaruga')).toBeLessThan(0.7)

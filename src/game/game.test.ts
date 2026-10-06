@@ -628,16 +628,22 @@ describe('server', () => {
     const cfg = { apiKey: 'k', rand: () => 0.9, fetch: groqAnswer(openingAnswer) }
     const open = (await handleBattleRequest(JSON.stringify({ stage: 'opening', ...battleRequest(s) }), cfg)).body as { token: string }
     const roundCfg = { ...cfg, fetch: groqAnswer({ efficacy: [1, 1], actions: ['x', 'y'], sfx: ['A', 'B'], summary: 'Primo round epico' }) }
-    const r1 = await handleBattleRequest(JSON.stringify({ stage: 'round', token: open.token, choices: [3, 0] }), roundCfg)
+    const round = async (token: string, choices: [number, number]) => {
+      const r = await handleBattleRequest(JSON.stringify({ stage: 'round', token, choices }), roundCfg)
+      return { status: r.status, body: r.body as { token: string; round: { hp: number[] } } }
+    }
+    // Il superpotere si carica: al primo round il server lo rifiuta.
+    expect((await round(open.token, [3, 0])).status).toBe(400)
+    const r1 = await round(open.token, [0, 0])
     expect(r1.status).toBe(200)
-    const body = r1.body as { token: string; round: { hp: number[] } }
-    expect(body.round.hp[1]).toBeLessThan(100)
-    // Il superpotere è già stato usato: il server rifiuta.
-    expect((await handleBattleRequest(JSON.stringify({ stage: 'round', token: body.token, choices: [3, 0] }), roundCfg)).status).toBe(400)
-    const r2 = await handleBattleRequest(JSON.stringify({ stage: 'round', token: body.token, choices: [0, 1] }), roundCfg)
-    expect(r2.status).toBe(200)
+    expect(r1.body.round.hp[1]).toBeLessThan(100)
+    const r2 = await round(r1.body.token, [0, 0])
     // L'AI ricorda il round precedente.
     expect(lastSent.messages[1].content).toContain('Primo round epico')
+    const r3 = await round(r2.body.token, [3, 0])
+    expect(r3.status).toBe(200)
+    // Superpotere già usato: rifiutato.
+    expect((await round(r3.body.token, [3, 0])).status).toBe(400)
   })
 })
 

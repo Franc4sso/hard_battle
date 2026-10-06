@@ -39,7 +39,7 @@ export const MOVE_INFO: Record<MoveType, { label: string; rule: string }> = {
   attacco: { label: 'Attacco', rule: 'Danni pieni. Contro una difesa fa poco e subisce il contrattacco.' },
   difesa: { label: 'Difesa', rule: 'Para quasi tutto e contrattacca forte. Se l’altro non attacca è sprecata. Non due volte di fila.' },
   cura: { label: 'Cura', rule: 'Recupera vita. Non due round di fila.' },
-  super: { label: 'Superpotere', rule: 'Colpo devastante che passa anche la difesa (o, se il potere cura, grande cura che para). Una volta sola.' },
+  super: { label: 'Superpotere', rule: 'Dal round 3. Colpo devastante che passa anche la difesa (o, se il potere cura, grande cura che para). Una volta sola.' },
   disperata: { label: 'Disperata', rule: 'Barra della rimonta piena e vita sotto l’avversario: colpo enorme che nessuna difesa ferma. Una volta sola.' },
 }
 
@@ -156,6 +156,8 @@ export const MAX_HP = 100
 export const MAX_ROUNDS = 8
 /** Danni da incassare per riempire la barra della rimonta. */
 export const RAGE_MAX = 60
+/** Primo round in cui si può usare il superpotere. */
+export const SUPER_FROM_ROUND = 3
 
 const ATTACK = 23
 const SUPER = 36
@@ -221,6 +223,8 @@ export const START: FightState = {
 /** Perché una mossa non si può usare adesso (undefined = si può). `rule`: evento del round. */
 export function blockedReason(fs: FightState, side: Side, type: MoveType, rule?: EventRule): string | undefined {
   if (type === 'super' && fs.superUsed[side] && rule !== 'seconda_carica') return 'Già usato'
+  // Il superpotere si carica nei primi round: niente risse decise al primo colpo.
+  if (type === 'super' && fs.round + 1 < SUPER_FROM_ROUND && rule !== 'seconda_carica') return `Si carica: dal round ${SUPER_FROM_ROUND}`
   // Né cura né difesa due round di fila: dopo, si resta scoperti.
   if ((type === 'cura' || type === 'difesa') && fs.lastType[side] === type) return 'Non due volte di fila'
   if (type === 'difesa' && fs.status?.[side]?.stunned) return 'Stordito: niente difesa'

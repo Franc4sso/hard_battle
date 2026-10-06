@@ -78,7 +78,7 @@ ${FX_PROMPT}
   - La quarta ha "type": "super" ed è il suo superpotere, con "effect": "colpo" (danno devastante) oppure "cura" (se il superpotere è curativo o rigenerante: grande recupero di vita mentre para i colpi).
 - "desperate": per ciascun combattente la MOSSA DISPERATA, il colpo della disperazione che si sblocca solo quando sta perdendo: {"name": max 4 parole, epico e ridicolo, "desc": max 12 parole}.
   - Gli attacchi nascono dall'arma, difese e cure dalla personalità e dal personaggio.
-  - "name": max 4 parole, buffo e specifico per le sue carte (mai generico come "Pugno" o "Scudo"). "desc": cosa fa, max 12 parole.
+  - "name": max 4 parole, buffo e specifico per le sue carte (mai generico come "Pugno" o "Scudo"). "desc": cosa si vede succedere, max 12 parole, scenico e divertente. NON ripetere la regola o i numeri dell'effetto: quelli li mostra il gioco.
 - "events": durante la rissa l'arena interverrà così:
 ${events}
   Per ciascuno, nell'ordine, scrivi la scena (1 frase, max 25 parole) che spiega PERCHÉ succede, usando oggetti, persone o eventi tipici di quest'arena.

@@ -129,6 +129,11 @@ export function roundPrompt(
     .map((i) => (dry.notes[i].length ? `${names[i]}: ${dry.notes[i].join(', ').toLowerCase()}` : ''))
     .filter(Boolean)
     .join('; ')
+  // Quanto fa male, a parole: il racconto deve combaciare con le barre della vita.
+  const hurt = (d: number) => (d <= 0 ? 'nessun danno' : d < 12 ? 'un graffio' : d < 25 ? 'un colpo pieno' : 'un colpo devastante')
+  const outcome = ([0, 1] as const)
+    .map((i) => `${names[i]} subisce ${hurt(dry.damage[i])}${dry.heal[i] > 0 ? ' e recupera vita' : ''}`)
+    .join('; ')
   const states = ([0, 1] as const)
     .map((i) => statusText(names[i], fs.status?.[i], fs.rage?.[i] ?? 0, fs.desperateUsed?.[i] ?? false))
     .filter(Boolean)
@@ -145,7 +150,8 @@ MOSSE SCELTE IN SEGRETO, NELLO STESSO MOMENTO:
 - ${names[0]} (COMBATTENTE 0): "${moves[0].name}" [${label(moves[0])}] ${moves[0].desc}
 - ${names[1]} (COMBATTENTE 1): "${moves[1].name}" [${label(moves[1])}] ${moves[1].desc}
 ESITO DI BASE SECONDO LE REGOLE: ${baseOutcome(names, moves)}
-EFFETTI CHE SCATTANO DAVVERO: ${triggered || 'nessuno'}. Gli altri effetti scritti sulle mosse NON scattano in questo round: non raccontarli.${
+EFFETTI CHE SCATTANO DAVVERO: ${triggered || 'nessuno'}. Gli altri effetti scritti sulle mosse NON scattano in questo round: non raccontarli.
+COME FINISCE (il racconto deve combaciare, il tuo voto può solo aumentarlo o ridurlo un po'): ${outcome}.${
     event ? `\nEVENTO DELL'ARENA IN QUESTO ROUND: ${EVENT_RULES[event.rule].title}. ${event.text} Regola: ${EVENT_RULES[event.rule].rule} Fallo pesare nel racconto.` : ''
   }
 

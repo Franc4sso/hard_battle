@@ -91,7 +91,7 @@ export function SabotageScreen({ state, dispatch }: ScreenProps) {
         {target.toUpperCase()}!
       </h1>
       <p className="a-rise text-[15px] leading-snug font-bold text-white" style={anim(0.1)}>
-        Scegli {SLOT_INFO[slot].title.toLowerCase()} che {target} sarà costretto a tenersi. Lo saprà, ma non saprà che sei stato tu a sceglierla tra tre.
+        Sono tutte carte trappola: scegli la disgrazia peggiore per il mostro di {target}. Sarà {SLOT_INFO[slot].title.toLowerCase()} che dovrà tenersi, e gli toglierà forza in battaglia.
       </p>
       <CardChoices cards={state.offer} selected={selected} onSelect={setSelected} />
       <Footer>

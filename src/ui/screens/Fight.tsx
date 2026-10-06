@@ -189,7 +189,7 @@ export const MOVE_STYLE: Record<MoveType, { bg: string; fg: string }> = {
   super: { bg: '#16141a', fg: '#FFE14D' },
 }
 
-function TypeTag({ type, force, effect }: { type: MoveType; force?: Force; effect?: Move['effect'] }) {
+function TypeTag({ type, force, effect, weak }: { type: MoveType; force?: Force; effect?: Move['effect']; weak?: boolean }) {
   return (
     <span
       className="inline-flex items-center gap-1 rounded-md border-2 border-ink px-1.5 text-[11px] font-extrabold tracking-wide uppercase"
@@ -197,6 +197,7 @@ function TypeTag({ type, force, effect }: { type: MoveType; force?: Force; effec
     >
       {MOVE_INFO[type].label}
       {type === 'super' && effect === 'cura' && <span className="normal-case">· cura</span>}
+      {type === 'super' && weak && <span className="normal-case">· trappola</span>}
       {force && type !== 'super' && (
         <span aria-label={`forza ${force} su 3`} className="tracking-[-0.1em]">
           {'●'.repeat(force)}
@@ -342,7 +343,7 @@ function MovePicker({ state, dispatch }: ScreenProps) {
             >
               <span className="flex flex-col gap-1">
                 <span className="flex flex-wrap items-center gap-2">
-                  <TypeTag type={m.type} force={m.force} effect={m.effect} />
+                  <TypeTag type={m.type} force={m.force} effect={m.effect} weak={m.weak} />
                   {blocked && <span className="text-[11px] font-extrabold">{blocked}</span>}
                 </span>
                 <b className="text-[17px] leading-tight font-extrabold">{m.name}</b>
@@ -416,7 +417,7 @@ function Clash({ state, dispatch }: ScreenProps) {
               <span className="label" style={{ color: PLAYER_TEXT[s] }}>
                 {state.players[s].name}
               </span>
-              <TypeTag type={m.type} effect={m.effect} />
+              <TypeTag type={m.type} effect={m.effect} weak={m.weak} />
             </span>
             <b className="comic text-[26px] leading-none">{m.name}</b>
           </div>
@@ -450,7 +451,7 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
               style={{ ...anim(s * 0.7, big ? (s ? 1 : -1) : undefined), ...(big ? { boxShadow: '5px 5px 0 #FF4B3E' } : {}) }}
             >
               <span className="flex flex-wrap items-center gap-2">
-                <TypeTag type={m.type} force={m.force} effect={m.effect} />
+                <TypeTag type={m.type} force={m.force} effect={m.effect} weak={m.weak} />
                 <b className={`text-[13px] font-extrabold ${big ? 'text-sun' : ''}`}>{m.name}</b>
               </span>
               <span className="text-[15px] leading-snug font-medium">{round.actions[s]}</span>

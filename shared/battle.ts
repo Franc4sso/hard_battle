@@ -1,4 +1,4 @@
-import type { Card } from './cards'
+import { HEALING_POWER_IDS, type Card } from './cards'
 
 export type Side = 0 | 1
 
@@ -52,7 +52,12 @@ export interface Move {
   force: Force
   /** Solo per il superpotere: colpo devastante o, se il potere è curativo, grande cura che para. */
   effect?: 'colpo' | 'cura'
+  /** Superpotere arrivato da una carta trappola: vale meno. */
+  weak?: true
 }
+
+/** Quanto vale un superpotere trappola rispetto a uno normale. */
+const WEAK_SUPER = 0.6
 
 export const healsBig = (m: Move) => m.type === 'super' && m.effect === 'cura'
 /** Il tipo "di fatto" di una mossa: un superpotere curativo si comporta come una cura. */
@@ -187,7 +192,7 @@ export function roundEffects(
     const fm = moves[foe]
     const foeHits = fm.type === 'attacco' || (fm.type === 'super' && !healsBig(fm))
     // colpo dell'avversario
-    let incoming = !foeHits ? 0 : fm.type === 'attacco' ? ATTACK * FORCE_MULT[fm.force] * (rule === 'furia' ? 1.5 : 1) : SUPER
+    let incoming = !foeHits ? 0 : fm.type === 'attacco' ? ATTACK * FORCE_MULT[fm.force] * (rule === 'furia' ? 1.5 : 1) : SUPER * (fm.weak ? WEAK_SUPER : 1)
     incoming *= eff[foe] * jitter() * heat
     const hitKind = fm.type === 'attacco' ? 'attacco' : 'super'
     const fragile = rule === 'difese_fragili' ? 2 : 1
@@ -197,7 +202,7 @@ export function roundEffects(
     // contrattacco di chi si difende da un attacco normale
     if (fm.type === 'difesa' && m.type === 'attacco' && rule !== 'difese_fragili')
       counters[me] = COUNTER * FORCE_MULT[fm.force] * eff[foe] * jitter() * heat
-    const healBase = healsBig(m) ? SUPER_HEAL : m.type === 'cura' ? HEAL * FORCE_MULT[m.force] : 0
+    const healBase = healsBig(m) ? SUPER_HEAL * (m.weak ? WEAK_SUPER : 1) : m.type === 'cura' ? HEAL * FORCE_MULT[m.force] : 0
     heal[me] = Math.round(healBase * healMult * eff[me] * jitter())
   }
   // Effetto boomerang: chi colpisce si prende un terzo del colpo che ha dato.
@@ -401,11 +406,29 @@ export function fallbackMoves(f: Fighter): Move[] {
     const [name, desc] = names[type as Exclude<MoveType, 'super'>][k % 2]
     return { type, force, name, desc }
   })
-  return [...moves, { type: 'super', force: 3, effect: HEALING_POWERS.has(m.power.id) ? 'cura' : 'colpo', name: m.power.name, desc: m.power.desc }]
+  fitBudget(moves, forceBudget(f))
+  return [...moves, superMove(f, m.power.name, m.power.desc, HEALING_POWER_IDS.has(m.power.id) ? 'cura' : 'colpo')]
 }
 
-/** Superpoteri curativi, per il narratore di riserva (con l'AI lo decide lei). */
-const HEALING_POWERS = new Set(['s-si-rigenera-con-un-caffe', 's-ringiovanisce-a-ogni-colpo', 's-annulla-l-ultima-mossa'])
+/** Chi ha ricevuto una carta trappola ha meno forza da distribuire tra le mosse. */
+export const forceBudget = (f: Fighter) => (Object.values(f.monster).some((c) => c.cursed) ? FORCE_BUDGET - 1 : FORCE_BUDGET)
+
+/** Porta la somma delle forze al budget, togliendo o aggiungendo un punto alla volta. */
+function fitBudget(moves: Move[], budget: number) {
+  let sum = moves.reduce((s, m) => s + m.force, 0)
+  for (let guard = 0; sum !== budget && guard < 10; guard++) {
+    const down = sum > budget
+    const pick = [...moves].sort((a, b) => (down ? b.force - a.force : a.force - b.force))[0]
+    if ((down && pick.force === 1) || (!down && pick.force === 3)) break
+    pick.force = (pick.force + (down ? -1 : 1)) as Force
+    sum += down ? -1 : 1
+  }
+}
+
+function superMove(f: Fighter, name: string, desc: string, effect: Move['effect']): Move {
+  // Superpotere trappola: funziona, ma male.
+  return { type: 'super', force: 3, effect, name, desc, ...(f.monster.power.cursed ? { weak: true } : {}) }
+}
 
 const isMoveType = (v: unknown): v is MoveType => MOVE_ORDER.includes(v as MoveType)
 
@@ -427,10 +450,10 @@ export function normalizeMoves(raw: unknown, f: Fighter): Move[] {
     return { type, force, name: text(m.name, 40) || b.name, desc: text(m.desc, 140) || b.desc }
   })
   if (!moves.some((m) => m.type === 'attacco')) moves[0] = { ...moves[0], type: 'attacco' }
-  if (moves.reduce((s, m) => s + m.force, 0) !== FORCE_BUDGET) for (const m of moves) m.force = 2
+  fitBudget(moves, forceBudget(f))
   const sup = backup[MOVES_PER_MONSTER - 1]
   const effect = superRaw?.effect === 'cura' || superRaw?.effect === 'colpo' ? superRaw.effect : sup.effect
-  moves.push({ type: 'super', force: 3, effect, name: text(superRaw?.name, 40) || sup.name, desc: text(superRaw?.desc, 140) || sup.desc })
+  moves.push(superMove(f, text(superRaw?.name, 40) || sup.name, text(superRaw?.desc, 140) || sup.desc, effect))
   return moves
 }
 

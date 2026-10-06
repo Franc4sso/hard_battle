@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ARENAS, DECKS, SLOTS } from '../../shared/cards'
+import { ARENAS, DECKS, HEALING_POWER_IDS, SABOTAGE_DECKS, SLOTS, findCard } from '../../shared/cards'
 import {
   MAX_ROUNDS,
   START,
@@ -9,6 +9,7 @@ import {
   offlineOpening,
   FORCE_BUDGET,
   fallbackMoves,
+  forceBudget,
   normalizeMoves,
   offlineTexts,
   playRound,
@@ -86,10 +87,62 @@ function fightToEnd(s: MatchState, moves: [MoveType, MoveType]): MatchState {
 }
 
 describe('carte', () => {
-  it('hanno id unici e mazzi abbastanza grandi', () => {
-    const all = [...SLOTS.flatMap((s) => DECKS[s]), ...ARENAS]
+  it('hanno id unici e mazzi grandi: combinazioni praticamente infinite', () => {
+    const traps = Object.values(SABOTAGE_DECKS).flat()
+    const all = [...SLOTS.flatMap((s) => DECKS[s]), ...ARENAS, ...traps]
     expect(new Set(all.map((c) => c.id)).size).toBe(all.length)
-    for (const s of SLOTS) expect(DECKS[s].length).toBeGreaterThanOrEqual(40)
+    expect(DECKS.character.length).toBeGreaterThanOrEqual(150)
+    expect(DECKS.weapon.length).toBeGreaterThanOrEqual(115)
+    expect(DECKS.personality.length).toBeGreaterThanOrEqual(85)
+    expect(DECKS.power.length).toBeGreaterThanOrEqual(90)
+    expect(ARENAS.length).toBeGreaterThanOrEqual(60)
+    for (const d of Object.values(SABOTAGE_DECKS)) expect(d.length).toBeGreaterThanOrEqual(30)
+    // Le carte trappola stanno solo nei mazzi trappola.
+    expect(traps.every((c) => c.cursed)).toBe(true)
+    expect(SLOTS.flatMap((s) => DECKS[s]).some((c) => c.cursed)).toBe(false)
+    // I superpoteri curativi esistono davvero nel mazzo.
+    for (const id of HEALING_POWER_IDS) expect(findCard(id)).toBeDefined()
+  })
+})
+
+describe('carte trappola', () => {
+  it('nel sabotaggio escono solo carte trappola, nella creazione mai', () => {
+    for (let seed = 0; seed < 25; seed++) {
+      let s = createMatch(['A', 'B'], 1, seed)
+      s = reduce(s, { type: 'beginTurn' })
+      expect(s.offer.every((c) => c.cursed)).toBe(true)
+      s = reduce(reduce(reduce(s, { type: 'sabotage', index: 0 }), { type: 'beginTurn' }), { type: 'sabotage', index: 1 })
+      expect(s.phase).toBe('pick')
+      expect(s.offer.some((c) => c.cursed)).toBe(false)
+      expect(s.draft[s.gifts[1].slot]?.cursed).toBe(true)
+    }
+  })
+
+  it('una carta trappola toglie forza alle mosse', () => {
+    const clean = fighters()[0]
+    const trapped: Fighter = { ...clean, monster: { ...clean.monster, personality: SABOTAGE_DECKS.personality[0] } }
+    expect(forceBudget(clean)).toBe(FORCE_BUDGET)
+    expect(forceBudget(trapped)).toBe(FORCE_BUDGET - 1)
+    const sum = (ms: Move[]) => ms.slice(0, 3).reduce((s, m) => s + m.force, 0)
+    expect(sum(fallbackMoves(trapped))).toBe(FORCE_BUDGET - 1)
+    const fromAi = normalizeMoves(
+      [
+        { type: 'attacco', force: 2, name: 'x' },
+        { type: 'difesa', force: 2, name: 'y' },
+        { type: 'cura', force: 2, name: 'z' },
+      ],
+      trapped,
+    )
+    expect(sum(fromAi)).toBe(FORCE_BUDGET - 1)
+  })
+
+  it('un superpotere trappola funziona, ma male', () => {
+    const clean = fighters()[0]
+    const trapped: Fighter = { ...clean, monster: { ...clean.monster, power: SABOTAGE_DECKS.power[0] } }
+    const weak = fallbackMoves(trapped)[3]
+    expect(weak.weak).toBe(true)
+    const hit = (m: Move) => roundEffects([m, mv('cura')], [1, 1], half).damage[1]
+    expect(hit(weak)).toBeLessThan(hit(mv('super')))
   })
 })
 
@@ -100,7 +153,7 @@ describe('sabotaggio e creazione', () => {
     s = reduce(s, { type: 'beginTurn' })
     expect(s.phase).toBe('sabotage')
     const giftForMarco = s.offer[2]
-    expect(DECKS[s.gifts[1].slot]).toContain(giftForMarco)
+    expect(giftForMarco.cursed).toBe(true)
     s = reduce(s, { type: 'sabotage', index: 2 })
     expect(s.phase).toBe('pass')
     expect(s.picker).toBe(1)

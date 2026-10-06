@@ -2,12 +2,26 @@
  * I mazzi del gioco. Condivisi tra app e server: il telefono manda solo gli id,
  * il server ricostruisce il prompt da qui (nessun testo libero arriva all'AI).
  */
+import {
+  CURSED_PERSONALITIES,
+  CURSED_POWERS,
+  CURSED_WEAPONS,
+  MORE_ARENAS,
+  MORE_CHARACTERS,
+  MORE_HEALING_POWERS,
+  MORE_PERSONALITIES,
+  MORE_POWERS,
+  MORE_WEAPONS,
+} from './decks'
+
 export type Slot = 'character' | 'weapon' | 'personality' | 'power'
 
 export interface Card {
   id: string
   name: string
   desc: string
+  /** Carta trappola: esce solo nel sabotaggio ed è uno svantaggio per chi la riceve. */
+  cursed?: true
 }
 
 export const SLOTS: readonly Slot[] = ['character', 'weapon', 'personality', 'power']
@@ -21,11 +35,11 @@ function slug(s: string): string {
     .replace(/^-|-$/g, '')
 }
 
-function deck(prefix: string, rows: [string, string][]): Card[] {
-  return rows.map(([name, desc]) => ({ id: `${prefix}-${slug(name)}`, name, desc }))
+function deck(prefix: string, rows: [string, string][], cursed = false): Card[] {
+  return rows.map(([name, desc]) => ({ id: `${prefix}-${slug(name)}`, name, desc, ...(cursed ? { cursed: true as const } : {}) }))
 }
 
-export const CHARACTERS = deck('c', [
+const BASE_CHARACTERS = deck('c', [
   // animali
   ['Piccione di Venezia', 'Conosce ogni calle e non ha paura di nessun turista.'],
   ['Capibara zen', 'Il mammifero più rilassato del pianeta. Niente lo scompone.'],
@@ -92,7 +106,7 @@ export const CHARACTERS = deck('c', [
   ['Moka', 'Sotto pressione dà il meglio di sé.'],
 ])
 
-export const WEAPONS = deck('w', [
+const BASE_WEAPONS = deck('w', [
   ['Baguette affilata', 'Croccante fuori, letale dentro.'],
   ['Tostapane a batteria', 'Tosta qualsiasi cosa. Anche i nemici.'],
   ['Ciabatta della nonna', 'Lanciata con precisione da cecchino. Torna sempre indietro.'],
@@ -145,7 +159,7 @@ export const WEAPONS = deck('w', [
   ['Clacson da stadio', '130 decibel di terrore.'],
 ])
 
-export const PERSONALITIES = deck('p', [
+const BASE_PERSONALITIES = deck('p', [
   ['Drammatico come una soap', 'Ogni colpo subito è un tradimento.'],
   ['Zen ma permaloso', 'Calmissimo, finché non lo chiami “piccolo”.'],
   ['Convinto di essere in un film', 'Annuncia ogni mossa come un trailer.'],
@@ -190,7 +204,7 @@ export const PERSONALITIES = deck('p', [
   ['Sempre affamato', 'Pensa solo a cosa mangerà dopo.'],
 ])
 
-export const POWERS = deck('s', [
+const BASE_POWERS = deck('s', [
   ['Teletrasporto solo nei bagni pubblici', 'Può sparire, ma riappare sempre in un bagno.'],
   ['Parla con gli elettrodomestici', 'Lavatrici, frigoriferi e microonde gli obbediscono.'],
   ['Ferma il tempo per 3 secondi', 'Ma poi starnutisce fortissimo.'],
@@ -239,7 +253,7 @@ export const POWERS = deck('s', [
   ['Calamita per la sfortuna', 'Ogni disgrazia si sposta sull’avversario.'],
 ])
 
-export const ARENAS = deck('a', [
+const BASE_ARENAS = deck('a', [
   ['Supermercato alle 3 di notte', 'Corsie deserte, luci al neon che sfarfallano, un carrello abbandonato.'],
   ['Matrimonio in Puglia', 'Trecento invitati, buffet infinito, il trenino sta per partire.'],
   ['Autogrill sull’A1', 'Camionisti, panini Camogli e un bagno chiuso per pulizia.'],
@@ -268,6 +282,13 @@ export const ARENAS = deck('a', [
   ['Cucina di un ristorante stellato', 'Fuochi accesi, coltelli ovunque, uno chef che urla.'],
 ])
 
+export const CHARACTERS = [...BASE_CHARACTERS, ...deck('c', MORE_CHARACTERS)]
+export const WEAPONS = [...BASE_WEAPONS, ...deck('w', MORE_WEAPONS)]
+export const PERSONALITIES = [...BASE_PERSONALITIES, ...deck('p', MORE_PERSONALITIES)]
+export const POWERS = [...BASE_POWERS, ...deck('s', MORE_POWERS)]
+export const ARENAS = [...BASE_ARENAS, ...deck('a', MORE_ARENAS)]
+
+/** I mazzi da cui si costruisce il proprio mostro. */
 export const DECKS: Record<Slot, Card[]> = {
   character: CHARACTERS,
   weapon: WEAPONS,
@@ -275,7 +296,21 @@ export const DECKS: Record<Slot, Card[]> = {
   power: POWERS,
 }
 
-const BY_ID = new Map<string, Card>([...CHARACTERS, ...WEAPONS, ...PERSONALITIES, ...POWERS, ...ARENAS].map((c) => [c.id, c]))
+/** Mazzi TRAPPOLA: escono solo quando si sabota l'avversario (il personaggio non si sabota). */
+export const SABOTAGE_DECKS: Record<Exclude<Slot, 'character'>, Card[]> = {
+  weapon: deck('w', CURSED_WEAPONS, true),
+  personality: deck('p', CURSED_PERSONALITIES, true),
+  power: deck('s', CURSED_POWERS, true),
+}
+
+/** Superpoteri che curano invece di colpire (per il narratore di riserva: con l'AI lo decide lei). */
+export const HEALING_POWER_IDS = new Set([
+  ...['Si rigenera con un caffè', 'Ringiovanisce a ogni colpo', 'Annulla l’ultima mossa', ...MORE_HEALING_POWERS].map((n) => `s-${slug(n)}`),
+])
+
+const BY_ID = new Map<string, Card>(
+  [...CHARACTERS, ...WEAPONS, ...PERSONALITIES, ...POWERS, ...ARENAS, ...Object.values(SABOTAGE_DECKS).flat()].map((c) => [c.id, c]),
+)
 
 export function findCard(id: unknown): Card | undefined {
   return typeof id === 'string' ? BY_ID.get(id) : undefined

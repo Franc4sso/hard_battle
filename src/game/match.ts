@@ -1,4 +1,4 @@
-import { ARENAS, DECKS, SLOTS, type Card, type Slot } from '../../shared/cards'
+import { ARENAS, DECKS, SABOTAGE_DECKS, SLOTS, type Card, type Slot } from '../../shared/cards'
 import { START, blockedReason, eventAt, mvpOf, type BattleRequest, type FightState, type Monster, type Opening, type RoundEnd, type RoundResult, type Side } from '../../shared/battle'
 import { Rng } from './rng'
 
@@ -134,9 +134,11 @@ function draw(rng: Rng, deck: Card[], drawn: string[], n: number): { cards: Card
   return { cards, drawn: [...used, ...cards.map((c) => c.id)] }
 }
 
-function withOffer(state: MatchState, slot: Slot): MatchState {
+/** Carte da scegliere: dal mazzo normale, o dal mazzo trappola quando si sabota. */
+function withOffer(state: MatchState, slot: Slot, sabotage = false): MatchState {
   const rng = new Rng(state.seed)
-  const { cards, drawn } = draw(rng, DECKS[slot], state.drawn, OFFER_SIZE)
+  const source = sabotage && slot !== 'character' ? SABOTAGE_DECKS[slot] : DECKS[slot]
+  const { cards, drawn } = draw(rng, source, state.drawn, OFFER_SIZE)
   return { ...state, offer: cards, drawn, seed: rng.seed }
 }
 
@@ -153,7 +155,7 @@ function enterTurn(state: MatchState, turn: number, phase: Phase): MatchState {
     draft: t.task === 'draft' && gift.card ? { [gift.slot]: gift.card } : {},
     phase,
   }
-  return withOffer(next, t.task === 'sabotage' ? state.gifts[other(t.who)].slot : draftSlots(next, t.who)[0])
+  return t.task === 'sabotage' ? withOffer(next, state.gifts[other(t.who)].slot, true) : withOffer(next, draftSlots(next, t.who)[0])
 }
 
 function startRound(state: MatchState, round: number, first: Side): MatchState {

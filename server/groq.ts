@@ -40,14 +40,17 @@ STILE
 - Comicità slapstick da cartone, adatta a tutti: niente sangue, niente sesso, niente parolacce, niente insulti a gruppi di persone.
 - Rispondi SOLO con un oggetto JSON valido, nella forma richiesta.`
 
+const TRAP = ' [CARTA TRAPPOLA imposta dall’avversario: è uno svantaggio vero, deve pesare in ogni scena]'
+
 function describe(f: Fighter, i: number): string {
   const m = f.monster
+  const t = (c: { cursed?: true }) => (c.cursed ? TRAP : '')
   return [
     `COMBATTENTE ${i} (giocatore: ${f.player})`,
     `- Personaggio: ${m.character.name}. ${m.character.desc}`,
-    `- Arma: ${m.weapon.name}. ${m.weapon.desc}`,
-    `- Personalità: ${m.personality.name}. ${m.personality.desc}`,
-    `- Superpotere: ${m.power.name}. ${m.power.desc}`,
+    `- Arma: ${m.weapon.name}. ${m.weapon.desc}${t(m.weapon)}`,
+    `- Personalità: ${m.personality.name}. ${m.personality.desc}${t(m.personality)}`,
+    `- Superpotere: ${m.power.name}. ${m.power.desc}${t(m.power)}`,
   ].join('\n')
 }
 
@@ -64,7 +67,8 @@ PRESENTAZIONE DELLA RISSA. Scrivi:
 - "nicknames": un soprannome epico e buffo per ciascun combattente, nell'ordine 0 e 1, max 4 parole (es. "Il Flagello di IKEA").
 - "moves": per ciascun combattente ESATTAMENTE 4 mosse.
   - Le prime 3 hanno "type" a scelta tra "attacco", "difesa", "cura", DECISI DAL PERSONAGGIO E DALLE SUE CARTE: un bruto o un'arma pesante può dare 2-3 attacchi e nessuna cura, un tipo zen o ipocondriaco difese e cure, un furbo un attacco e due difese. Almeno un attacco. Non dare a tutti la stessa combinazione.
-  - Le prime 3 hanno "force" 1 (debole), 2 (normale) o 3 (forte), e la somma delle tre force deve essere ESATTAMENTE 6: chi ha più mosse dello stesso tipo le ha di forza diversa.
+  - Le prime 3 hanno "force" 1 (debole), 2 (normale) o 3 (forte), e la somma delle tre force deve essere ESATTAMENTE 6 (ESATTAMENTE 5 per chi ha una CARTA TRAPPOLA): chi ha più mosse dello stesso tipo le ha di forza diversa.
+  - Le mosse che nascono da una CARTA TRAPPOLA sono goffe e deboli, e il nome lo fa capire.
   - La quarta ha "type": "super" ed è il suo superpotere, con "effect": "colpo" (danno devastante) oppure "cura" (se il superpotere è curativo o rigenerante: grande recupero di vita mentre para i colpi).
   - Gli attacchi nascono dall'arma, difese e cure dalla personalità e dal personaggio.
   - "name": max 4 parole, buffo e specifico per le sue carte (mai generico come "Pugno" o "Scudo"). "desc": cosa fa, max 12 parole.
@@ -76,7 +80,9 @@ Forma: {"title":"...","intro":"...","nicknames":["...","..."],"events":["...",".
 
 const FORCE_WORD = { 1: 'debole', 2: 'normale', 3: 'forte' } as const
 const label = (m: Move) =>
-  m.type === 'super' ? `${MOVE_INFO.super.label}${m.effect === 'cura' ? ' curativo' : ''}` : `${MOVE_INFO[m.type].label}, ${FORCE_WORD[m.force]}`
+  m.type === 'super'
+    ? `${MOVE_INFO.super.label}${m.effect === 'cura' ? ' curativo' : ''}${m.weak ? ', da carta trappola: funziona male' : ''}`
+    : `${MOVE_INFO[m.type].label}, ${FORCE_WORD[m.force]}`
 
 export function roundPrompt(
   f: [Fighter, Fighter],

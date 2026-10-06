@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { play } from '../audio/sfx'
-import type { Slot } from '../../shared/cards'
+import type { Card, Slot } from '../../shared/cards'
 import type { Monster, Side } from '../../shared/battle'
 
 export const PLAYER_COLORS: Record<Side, string> = { 0: '#FF4B3E', 1: '#2F7BFF' }
@@ -54,10 +54,10 @@ export function HpBar({ hp }: { hp: number }) {
 }
 
 export function MonsterCard({ monster, player, side, className = '', style }: { monster: Monster; player: string; side: Side; className?: string; style?: CSSProperties }) {
-  const rows: [string, string][] = [
-    ['Arma', monster.weapon.name],
-    ['Carattere', monster.personality.name],
-    ['Potere', monster.power.name],
+  const rows: [string, Card][] = [
+    ['Arma', monster.weapon],
+    ['Carattere', monster.personality],
+    ['Potere', monster.power],
   ]
   return (
     <div className={`panel flex flex-col gap-2 ${className}`} style={style}>
@@ -66,9 +66,14 @@ export function MonsterCard({ monster, player, side, className = '', style }: { 
       </span>
       <b className="comic text-[28px] leading-none">{monster.character.name}</b>
       <ul className="flex flex-col gap-1 text-[13px] leading-snug">
-        {rows.map(([k, v]) => (
+        {rows.map(([k, card]) => (
           <li key={k}>
-            <span className="font-extrabold">{k}:</span> <span className="font-medium">{v}</span>
+            <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span>
+            {card.cursed && (
+              <span className="ml-1.5 rounded-md border-2 border-ink px-1 text-[10px] font-extrabold tracking-wide" style={{ background: '#FF7AC2' }}>
+                TRAPPOLA
+              </span>
+            )}
           </li>
         ))}
       </ul>

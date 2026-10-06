@@ -376,7 +376,8 @@ export function BattleScreen(props: ScreenProps) {
       {mode === 'play' && (
         <>
           <div className="comic self-center rounded-full bg-ink px-5 py-1 text-[22px] text-sun">
-            {shown < 0 ? 'PRESENTAZIONE' : `ROUND ${shown + 1}${battle ? ` DI ${rounds.length}` : ''}`}
+            {/* Mai "DI N": quanti round restano non si sa, il KO arriva a sorpresa. */}
+            {shown < 0 ? 'PRESENTAZIONE' : `ROUND ${shown + 1}`}
           </div>
           <div key={shown} className="flex flex-1 flex-col gap-3">
             {shown < 0 ? (

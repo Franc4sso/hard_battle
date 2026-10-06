@@ -3,6 +3,7 @@ import { ARENAS, DECKS, SLOTS } from '../../shared/cards'
 import {
   clashWinner,
   combine,
+  endingRounds,
   hpAfter,
   normalizeEnding,
   normalizeOpening,
@@ -203,6 +204,17 @@ describe('battaglia', () => {
     expect(clashWinner(['difesa', 'difesa'])).toBeUndefined()
   })
 
+  it('i round finali sono casuali, da 2 a 5, anche per il narratore di riserva', () => {
+    const seen = new Set<number>()
+    for (let i = 0; i < 200; i++) seen.add(endingRounds())
+    expect([...seen].sort()).toEqual([2, 3, 4, 5])
+    const f = fighters()
+    const o = offlineOpening(f, ARENAS[1])
+    const lengths = new Set(Array.from({ length: 60 }, () => offlineEnding(f, ARENAS[1], o, ['attacco', 'attacco']).rounds.length))
+    expect(lengths.size).toBeGreaterThan(1)
+    for (const n of lengths) expect(n).toBeGreaterThanOrEqual(2)
+  })
+
   it('il narratore di riserva fa una rissa completa e coerente', () => {
     const f = fighters()
     const o = offlineOpening(f, ARENAS[2])
@@ -232,7 +244,7 @@ describe('server', () => {
     expect(lastSent.messages[1].content.indexOf('Marco')).toBeLessThan(lastSent.messages[1].content.indexOf('Giulia'))
     expect(opening.rounds.map((r) => r.attacker)).toEqual([1, 0])
 
-    const ending = await generateEnding(f, ARENAS[0], true, opening, ['attacco', 'trucco'], {
+    const ending = await generateEnding(f, ARENAS[0], true, opening, ['attacco', 'trucco'], 4, {
       apiKey: 'k',
       fetch: groqAnswer({ winner: 0, rounds: [{ attacker: 0, action: 'z', damage: 40 }], nicknames: ['Il Corso', 'Il Pennuto'] }),
     })
@@ -240,6 +252,21 @@ describe('server', () => {
     expect(ending.nicknames).toEqual(['Il Pennuto', 'Il Corso'])
     // Le tattiche arrivano all'AI nello stesso ordine invertito: Marco (trucco) è il suo combattente 0.
     expect(lastSent.messages[1].content).toContain('(COMBATTENTE 0): Trucco sporco')
+    expect(lastSent.messages[1].content).toContain('ESATTAMENTE 4 ROUND FINALI')
+  })
+
+  it('se il modello grande ha finito i token al minuto ripiega su quello piccolo', async () => {
+    const models: string[] = []
+    const fakeFetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { model: string }
+      models.push(body.model)
+      if (body.model === 'openai/gpt-oss-120b') return new Response('rate limit', { status: 429 })
+      const answer = { title: 'T', rounds: [{ attacker: 0, action: 'x', damage: 10 }] }
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }))
+    }) as unknown as typeof fetch
+    const o = await generateOpening(fighters(), ARENAS[0], false, { apiKey: 'k', fetch: fakeFetch })
+    expect(o.source).toBe('ai')
+    expect(models).toEqual(['openai/gpt-oss-120b', 'openai/gpt-oss-20b'])
   })
 
   it('la firma protegge la prima parte', () => {

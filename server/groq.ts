@@ -16,11 +16,14 @@ export interface AiConfig {
   model?: string
   /** low | medium | high, solo per i modelli che ragionano. */
   reasoning?: string
+  /** Modello di riserva se il principale ha finito i token al minuto ('' = nessuno). */
+  fallbackModel?: string
   fetch?: typeof fetch
 }
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 export const DEFAULT_MODEL = 'openai/gpt-oss-120b'
+export const FALLBACK_MODEL = 'openai/gpt-oss-20b'
 
 export const SYSTEM_PROMPT = `Sei il narratore di RISSA ASSURDA, un party game in cui due giocatori costruiscono un mostro assurdo ciascuno e li fanno combattere. Tu simuli la battaglia come una telecronaca da cartone animato: esagerata, surreale, velocissima, piena di trovate. Scrivi in italiano.
 
@@ -65,7 +68,7 @@ PRIMA PARTE DELLA RISSA. Scrivi il titolo, la presentazione e i PRIMI 2 ROUND (u
 Forma: {"title":"...","intro":"...","rounds":[${ROUND_SHAPE}]}`
 }
 
-export function endingPrompt(f: [Fighter, Fighter], arena: Card, opening: Opening, tactics: [TacticId, TacticId]): string {
+export function endingPrompt(f: [Fighter, Fighter], arena: Card, opening: Opening, tactics: [TacticId, TacticId], count: number): string {
   const story = opening.rounds
     .map((r, i) => `Round ${i + 1}: attacca ${f[r.attacker].monster.character.name}. ${r.action} ${r.reaction}`)
     .join('\n')
@@ -84,15 +87,29 @@ Regole: Attacco totale batte Trucco sporco, Trucco sporco batte Difesa di ferro,
 
 SECONDA PARTE DELLA RISSA. Scrivi:
 - "clash": 1-2 frasi spettacolari su come si scontrano le due tattiche.
-- Da 2 a 3 ROUND FINALI: ognuno usa il proprio superpotere al massimo una volta ("power": true), almeno un colpo di scena con l'arena ("twist": true), l'ultimo round è il KO sferrato dal vincitore. "damage" tra 10 e 40.
+- ESATTAMENTE ${count} ROUND FINALI: ognuno usa il proprio superpotere al massimo una volta ("power": true), almeno un colpo di scena con l'arena ("twist": true), l'ultimo round è il KO sferrato dal vincitore. "damage" tra 10 e 40.
+- Suspense: il vincitore non deve essere prevedibile. Alterna i vantaggi e, spesso, fai rimontare chi vince: può essere in svantaggio di punti vita fino al penultimo round.
 - "finale": il KO e cosa succede dopo, 2 frasi. "reason": perché ha vinto, 1 frase. "mvp": la mossa migliore DEL VINCITORE, max 8 parole.
 - "nicknames": un soprannome epico e buffo per ciascun combattente, nell'ordine 0 e 1, max 4 parole (es. "Il Flagello di IKEA").
 Forma: {"clash":"...","rounds":[${ROUND_SHAPE}],"finale":"...","winner":0,"reason":"...","mvp":"...","nicknames":["...","..."]}`
 }
 
 async function askGroq(user: string, cfg: AiConfig): Promise<Record<string, unknown>> {
+  try {
+    return await askModel(user, cfg, cfg.model || DEFAULT_MODEL)
+  } catch (e) {
+    // Piano gratuito: superato il limite di token al minuto del modello grande,
+    // si riprova subito con quello piccolo, che ha un limite separato.
+    const fallback = cfg.fallbackModel ?? FALLBACK_MODEL
+    if (e instanceof RateLimitError && fallback && fallback !== (cfg.model || DEFAULT_MODEL)) return askModel(user, cfg, fallback)
+    throw e
+  }
+}
+
+class RateLimitError extends Error {}
+
+async function askModel(user: string, cfg: AiConfig, model: string): Promise<Record<string, unknown>> {
   const doFetch = cfg.fetch ?? fetch
-  const model = cfg.model || DEFAULT_MODEL
   // I gpt-oss ragionano prima di rispondere: più ragionamento = battaglia più curata ma più lenta.
   const reasoning = model.startsWith('openai/gpt-oss') ? { reasoning_effort: cfg.reasoning || 'low' } : {}
   const res = await doFetch(GROQ_URL, {
@@ -110,7 +127,10 @@ async function askGroq(user: string, cfg: AiConfig): Promise<Record<string, unkn
       ],
     }),
   })
-  if (!res.ok) throw new Error(`Groq ${res.status}: ${(await res.text()).slice(0, 300)}`)
+  if (!res.ok) {
+    const msg = `Groq ${res.status} (${model}): ${(await res.text()).slice(0, 300)}`
+    throw res.status === 429 ? new RateLimitError(msg) : new Error(msg)
+  }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
   return JSON.parse(data.choices?.[0]?.message?.content ?? '') as Record<string, unknown>
 }
@@ -156,12 +176,13 @@ export function generateEnding(
   swap: boolean,
   opening: Opening,
   tactics: [TacticId, TacticId],
+  count: number,
   cfg: AiConfig,
 ): Promise<Ending> {
   // La prima parte è salvata nell'ordine dell'app: per il prompt va girata come la vede l'AI.
   const seen: Opening = swap ? { ...opening, rounds: opening.rounds.map((r) => ({ ...r, attacker: (1 - r.attacker) as Side, hp: [r.hp[1], r.hp[0]] })) } : opening
   return retry(async () => {
-    const raw = await askGroq(endingPrompt(ordered(fighters, swap), arena, seen, ordered(tactics, swap)), cfg)
+    const raw = await askGroq(endingPrompt(ordered(fighters, swap), arena, seen, ordered(tactics, swap), count), cfg)
     if (swap) {
       unswapRounds(raw)
       raw.winner = flip(raw.winner)

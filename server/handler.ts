@@ -1,5 +1,5 @@
 import { deckOf, findCard, type Card, type Slot } from '../shared/cards'
-import { isTactic, type BattleRequest, type Fighter, type Monster, type Opening, type TacticId } from '../shared/battle'
+import { endingRounds, isTactic, type BattleRequest, type Fighter, type Monster, type Opening, type TacticId } from '../shared/battle'
 import { generateEnding, generateOpening, type AiConfig } from './groq'
 import { sign, verify } from './token'
 
@@ -83,7 +83,8 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const t = body.tactics
       if (!payload || !parsed || !Array.isArray(t) || t.length !== 2 || !isTactic(t[0]) || !isTactic(t[1]))
         return { status: 400, body: { error: 'bad_request' } }
-      const ending = await generateEnding(parsed.fighters, parsed.arena, payload.swap, payload.opening, t as [TacticId, TacticId], ai)
+      const count = endingRounds(cfg.rand ?? Math.random)
+      const ending = await generateEnding(parsed.fighters, parsed.arena, payload.swap, payload.opening, t as [TacticId, TacticId], count, ai)
       return { status: 200, body: { ending } }
     }
 

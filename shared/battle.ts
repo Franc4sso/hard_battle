@@ -110,6 +110,11 @@ export interface Battle {
   source: 'ai' | 'offline'
 }
 
+/** Round dopo le tattiche: estratti a caso, così non si sa quando arriva il KO. */
+export const ENDING_ROUNDS = { min: 2, max: 5 } as const
+export const endingRounds = (rand: () => number = Math.random) =>
+  ENDING_ROUNDS.min + Math.floor(rand() * (ENDING_ROUNDS.max - ENDING_ROUNDS.min + 1))
+
 export const MAX_HP = 100
 /** Nella prima parte nessuno scende sotto questa soglia: la rissa è ancora aperta. */
 export const OPENING_FLOOR = 35
@@ -185,7 +190,7 @@ export function normalizeEnding(raw: unknown, start: [number, number], source: E
   const r = raw as Record<string, unknown>
   const winner = side(r.winner)
   if (winner === undefined) return null
-  const rounds = parseRounds(r.rounds, 5, 1)
+  const rounds = parseRounds(r.rounds, ENDING_ROUNDS.max + 1, 1)
   if (rounds.length < 1) return null
   applyHp(rounds, start, winner)
   const nick = Array.isArray(r.nicknames) ? r.nicknames : []
@@ -264,6 +269,14 @@ export function offlineEnding(fighters: [Fighter, Fighter], arena: Card, opening
   const loser: Side = winner === 0 ? 1 : 0
   const [w, l] = [fighters[winner], fighters[loser]]
   const t = [tacticOf(tactics[0]), tacticOf(tactics[1])]
+  // Il perdente usa il potere per primo (e magari passa in vantaggio), poi round a caso, poi il KO.
+  const middle = Array.from({ length: endingRounds(rand) - 2 }, (_, i) => {
+    const att: Side = rand() < 0.5 ? 0 : 1
+    const [a, b] = [fighters[att], fighters[att === 0 ? 1 : 0]]
+    return i === 0
+      ? { attacker: att, action: `Colpo di scena: ${lower(arena.desc)} ${name(a)} ne approfitta all’istante.`, reaction: pick(REACTIONS)(b), damage: 20, twist: true }
+      : { attacker: att, action: pick(ATTACKS)(a, b), reaction: pick(REACTIONS)(b), damage: 10 + Math.floor(rand() * 20) }
+  })
   const raw = {
     winner,
     clash:
@@ -275,18 +288,18 @@ export function offlineEnding(fighters: [Fighter, Fighter], arena: Card, opening
         attacker: loser,
         action: `${name(l)} usa il superpotere: ${lower(l.monster.power.name)}! ${l.monster.power.desc}`,
         reaction: `${name(w)} vacilla, ma resta in piedi.`,
-        damage: 20,
-        power: true,
-      },
-      {
-        attacker: winner,
-        action: `Colpo di scena: ${lower(arena.desc)} ${name(w)} ne approfitta e scatena ${lower(w.monster.power.name)}.`,
-        reaction: pick(REACTIONS)(l),
         damage: 30,
         power: true,
-        twist: true,
       },
-      { attacker: winner, action: pick(ATTACKS)(w, l), reaction: `${name(l)} va al tappeto.`, damage: 40 },
+      ...middle,
+      {
+        attacker: winner,
+        action: `${name(w)} scatena all’improvviso ${lower(w.monster.power.name)}: ${lower(w.monster.power.desc)}`,
+        reaction: `${name(l)} va al tappeto.`,
+        damage: 40,
+        power: true,
+        twist: middle.length === 0,
+      },
     ],
     finale: `${name(l)} non si rialza. ${name(w)} esulta sopra le macerie: ${lower(arena.name)} non sarà mai più lo stesso.`,
     reason: `Ha sfruttato meglio ${lower(w.monster.weapon.name)} e il suo superpotere.`,

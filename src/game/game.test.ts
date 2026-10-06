@@ -53,8 +53,8 @@ const texts = (efficacy: [number, number] = [1, 1]): RoundTexts => ({
 })
 const mv = (type: MoveType, force: Force = 2): Move => ({ type, force: type === 'super' ? 3 : force, name: type, desc: '' })
 /** Un set di mosse fisso per i test: una per tipo, forza normale. */
-const KIT: Move[] = [mv('attacco'), mv('difesa'), mv('cura'), mv('super')]
-const IDX: Record<MoveType, number> = { attacco: 0, difesa: 1, cura: 2, super: 3 }
+const KIT: Move[] = [mv('attacco'), mv('difesa'), mv('cura'), mv('super'), mv('disperata')]
+const IDX: Record<MoveType, number> = { attacco: 0, difesa: 1, cura: 2, super: 3, disperata: 4 }
 const testOpening = (): Opening => ({ ...offlineOpening(fighters(), ARENAS[0]), moves: [KIT, KIT] })
 
 /** Gioca i 4 turni di un round: sabotaggi e creazione dei mostri. */
@@ -342,11 +342,11 @@ describe('eventi dell’arena e timbri', () => {
   })
 
   it('timbri solo per le mosse fuori dal normale', () => {
-    expect(stampOf(1.45)?.label).toBe('COLPO DA MAESTRO')
-    expect(stampOf(1.2)).toMatchObject({ label: 'SUPER EFFICACE', good: true })
+    expect(stampOf(1.22)?.label).toBe('COLPO DA MAESTRO')
+    expect(stampOf(1.12)).toMatchObject({ label: 'SUPER EFFICACE', good: true })
     expect(stampOf(1)).toBeNull()
-    expect(stampOf(0.8)?.good).toBe(false)
-    expect(stampOf(0.6)?.label).toBe('FIGURACCIA')
+    expect(stampOf(0.88)?.good).toBe(false)
+    expect(stampOf(0.8)?.label).toBe('FIGURACCIA')
   })
 
   it('il narratore di riserva prepara anche gli eventi', () => {
@@ -356,14 +356,88 @@ describe('eventi dell’arena e timbri', () => {
   })
 })
 
+describe('effetti secondari e rimonta', () => {
+  const withFx = (type: MoveType, fx: Move['fx'], force: Force = 2): Move => ({ ...mv(type, force), fx })
+  const play = (fs: FightState, a: Move, b: Move) => playRound(fs, [0, 0], [a, b], texts(), NAMES, half)
+
+  it('brucia: se colpisce, l’avversario perde vita anche al round dopo', () => {
+    const r1 = play(START, withFx('attacco', 'brucia'), mv('cura'))
+    expect(r1.next.status[1].burn).toBeGreaterThan(0)
+    const r2 = play(r1.next, mv('difesa'), mv('difesa'))
+    expect(r2.round.damage[1]).toBe(r1.next.status[1].burn)
+    expect(r2.round.notes[1].some((n) => n.startsWith('IN FIAMME'))).toBe(true)
+  })
+
+  it('stordisce: al round dopo l’avversario non può difendersi', () => {
+    const { next } = play(START, withFx('attacco', 'stordisce'), mv('cura'))
+    expect(blockedReason(next, 1, 'difesa')).toBeTruthy()
+    // Anche una difesa che stordisce funziona, se l'altro attacca.
+    const d = play(START, withFx('difesa', 'stordisce'), mv('attacco')).next
+    expect(d.status[1].stunned).toBe(true)
+  })
+
+  it('carica: il colpo dopo fa il 50% in più, poi la carica si consuma', () => {
+    const charged = play(START, withFx('cura', 'carica'), mv('difesa')).next
+    expect(charged.status[0].charged).toBe(true)
+    const base = play({ ...START, status: START.status }, mv('attacco'), mv('cura')).round.damage[1]
+    const boosted = play({ ...charged, lastType: [null, null] }, mv('attacco'), mv('cura'))
+    expect(boosted.round.damage[1]).toBeGreaterThan(base * 1.3)
+    expect(boosted.next.status[0].charged).toBe(false)
+  })
+
+  it('ruba vita: chi colpisce recupera parte del danno', () => {
+    const r = play({ ...START, hp: [50, 100] }, withFx('attacco', 'rubavita'), mv('cura')).round
+    expect(r.heal[0]).toBeGreaterThan(0)
+  })
+
+  it('finta: sfonda la difesa senza contrattacco, ma contro un attacco fa poco', () => {
+    const normale = play(START, mv('attacco'), mv('difesa')).round
+    const finta = play(START, withFx('attacco', 'finta'), mv('difesa')).round
+    expect(finta.damage[1]).toBeGreaterThan(normale.damage[1] * 3)
+    expect(finta.damage[0]).toBe(0)
+    expect(play(START, withFx('attacco', 'finta'), mv('attacco')).round.damage[1]).toBeLessThan(play(START, mv('attacco'), mv('attacco')).round.damage[1])
+  })
+
+  it('scudo: al round dopo si subisce meno', () => {
+    const shielded = play(START, withFx('cura', 'scudo'), mv('difesa')).next
+    const free = play({ ...START, lastType: [null, null] }, mv('cura'), mv('attacco')).round.damage[0]
+    const prot = play({ ...shielded, lastType: [null, null] }, mv('cura'), mv('attacco')).round.damage[0]
+    expect(prot).toBeLessThan(free)
+  })
+
+  it('difesa non due volte di fila, così dopo si resta scoperti', () => {
+    const { next } = play(START, mv('difesa'), mv('cura'))
+    expect(blockedReason(next, 0, 'difesa')).toBeTruthy()
+  })
+
+  it('mossa disperata: solo con la barra piena, solo se si è sotto, una volta, e sfonda la difesa', () => {
+    expect(blockedReason(START, 0, 'disperata')).toMatch(/Rimonta/)
+    const full: FightState = { ...START, hp: [30, 70], rage: [60, 10] }
+    expect(blockedReason(full, 0, 'disperata')).toBeUndefined()
+    expect(blockedReason({ ...full, hp: [80, 70] }, 0, 'disperata')).toBe('Solo se sei in svantaggio')
+    const r = play(full, mv('disperata'), mv('difesa'))
+    expect(r.round.damage[1]).toBeGreaterThan(25)
+    expect(r.next.rage[0]).toBe(0)
+    expect(blockedReason({ ...r.next, rage: [60, 0], hp: [10, 90] }, 0, 'disperata')).toBe('Già usata')
+  })
+
+  it('la barra della rimonta si riempie con i colpi presi', () => {
+    const { next } = play(START, mv('attacco'), mv('attacco'))
+    expect(next.rage[0]).toBeGreaterThan(0)
+    expect(next.rage[0]).toBe(100 - next.hp[0])
+  })
+})
+
 describe('mosse dinamiche', () => {
   it('le mosse di riserva cambiano da mostro a mostro ma rispettano le regole', () => {
     const kits = new Set<string>()
     for (let i = 0; i < 40; i++) {
       const moves = fallbackMoves({ player: 'x', monster: monster(i) })
       kits.add(moves.map((m) => `${m.type}${m.force}`).join())
-      expect(moves).toHaveLength(4)
+      expect(moves).toHaveLength(5)
       expect(moves[3].type).toBe('super')
+      expect(moves[4].type).toBe('disperata')
+      expect(moves.slice(0, 3).every((m) => m.fx)).toBe(true)
       expect(moves.some((m) => m.type === 'attacco')).toBe(true)
       expect(moves.slice(0, 3).reduce((s, m) => s + m.force, 0)).toBe(FORCE_BUDGET)
     }
@@ -380,7 +454,7 @@ describe('mosse dinamiche', () => {
       ],
       fighters()[0],
     )
-    expect(moves.map((m) => `${m.type}${m.force}`)).toEqual(['attacco3', 'attacco1', 'difesa2', 'super3'])
+    expect(moves.map((m) => `${m.type}${m.force}`)).toEqual(['attacco3', 'attacco1', 'difesa2', 'super3', 'disperata3'])
     expect(moves[3].name).toBe('Potere')
   })
 
@@ -442,14 +516,14 @@ describe('rissa e partita', () => {
 describe('risposte dell’AI', () => {
   it('il superpotere è sempre l’ultima mossa e non si perde se l’AI lo dimentica', () => {
     const o = normalizeOpening({ title: 'T', moves: [[{ name: 'Uno', type: 'attacco', force: 2 }], []] }, fighters(), 'ai')!
-    expect(o.moves[0]).toHaveLength(4)
+    expect(o.moves[0]).toHaveLength(5)
     expect(o.moves[0][0].name).toBe('Uno')
     expect(o.moves[1][3]).toMatchObject({ type: 'super', name: fighters()[1].monster.power.name })
   })
 
-  it('l’efficacia resta tra 0.6 e 1.5', () => {
+  it('l’efficacia dell’AI resta tra 0.8 e 1.25: le scelte contano più del voto', () => {
     const t = normalizeRoundTexts({ efficacy: [9, -3], actions: ['x', 'y'] })!
-    expect(t.efficacy).toEqual([1.5, 0.6])
+    expect(t.efficacy).toEqual([1.25, 0.8])
     expect(normalizeRoundTexts({ actions: ['solo uno'] })).toBeNull()
   })
 
@@ -499,9 +573,9 @@ describe('server', () => {
 
     const t = await generateRound(f, ARENAS[0], true, o, START, [], [0, 3], o.events[0], {
       apiKey: 'k',
-      fetch: groqAnswer({ efficacy: [1.4, 0.7], verdicts: ['per Marco', 'per Giulia'], actions: ['di Marco', 'di Giulia'], sfx: ['M', 'G'] }),
+      fetch: groqAnswer({ efficacy: [1.2, 0.9], verdicts: ['per Marco', 'per Giulia'], actions: ['di Marco', 'di Giulia'], sfx: ['M', 'G'] }),
     })
-    expect(t.efficacy).toEqual([0.7, 1.4])
+    expect(t.efficacy).toEqual([0.9, 1.2])
     expect(t.verdicts).toEqual(['per Giulia', 'per Marco'])
     expect(t.actions).toEqual(['di Giulia', 'di Marco'])
     expect(lastSent.messages[1].content).toContain('EVENTO DELL\'ARENA IN QUESTO ROUND: Furia')

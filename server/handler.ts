@@ -95,7 +95,7 @@ function parseChoices(v: unknown, t: FightToken): [number, number] | undefined {
 /**
  * POST /api/battle
  * - { stage: "opening", arena, fighters } → { opening, token }
- * - { stage: "round", token, choices: [mossa0, mossa1] } → { round, token }
+ * - { stage: "round", token, choices: [mossa0, mossa1] } → { round, next, token }
  */
 export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Promise<HandlerResult> {
   if (!cfg.apiKey) return { status: 503, body: { error: 'missing_key' } }
@@ -121,7 +121,7 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
       const { round, next } = playRound(t.fs, choices, moves, texts, names, rand, event?.rule)
       const token = sign({ ...t, fs: next, log: [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE), done: !!round.end }, secret)
-      return { status: 200, body: { round, token } }
+      return { status: 200, body: { round, next, token } }
     }
 
     const parsed = parseRequest(body)

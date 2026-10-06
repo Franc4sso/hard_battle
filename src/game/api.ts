@@ -77,16 +77,10 @@ export function requestRound(s: MatchState): Promise<{ round: RoundResult; next:
   return once(`${s.seed}-${s.round}-r${f.rounds.length}`, async () => {
     const opening = f.opening as Opening
     const body = f.token ? await post({ stage: 'round', token: f.token, choices }) : null
-    if (body && isRound(body.round) && typeof body.token === 'string') {
-      const round = body.round
-      const next: FightState = {
-        hp: round.hp,
-        superUsed: [f.fs.superUsed[0] || round.types[0] === 'super', f.fs.superUsed[1] || round.types[1] === 'super'],
-        lastType: round.types,
-        round: f.fs.round + 1,
-      }
-      return { round, next, token: body.token }
-    }
+    // Lo stato del round dopo (vita, stati, rimonta) lo calcola il server: il telefono lo prende così com'è.
+    const serverNext = body?.next as FightState | undefined
+    if (body && isRound(body.round) && serverNext && Array.isArray(serverNext.hp) && Array.isArray(serverNext.status) && typeof body.token === 'string')
+      return { round: body.round, next: serverNext, token: body.token }
     const fighters = fightersOf(s)
     const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]

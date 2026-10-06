@@ -1,5 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
-import { EVENT_RULES, MAX_HP, MAX_ROUNDS, MOVE_INFO, blockedReason, heatOf, mvpOf, stampOf, type ArenaEvent, type Force, type Monster, type Move, type MoveType, type Opening, type RoundResult, type Side } from '../../../shared/battle'
+import {
+  EVENT_RULES,
+  FX_INFO,
+  MAX_HP,
+  MAX_ROUNDS,
+  MOVE_INFO,
+  RAGE_MAX,
+  blockedReason,
+  heatOf,
+  mvpOf,
+  stampOf,
+  type ArenaEvent,
+  type Force,
+  type Monster,
+  type Move,
+  type MoveFx,
+  type MoveType,
+  type Opening,
+  type RoundResult,
+  type Side,
+  type Status,
+} from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
 import { currentEvent, matchWinner, nextChooser, other, type MatchState } from '../../game/match'
@@ -122,6 +143,9 @@ function FighterHp({
   side,
   hitKey,
   change,
+  rage,
+  status,
+  desperateReady,
 }: {
   name: string
   nickname: string
@@ -129,6 +153,9 @@ function FighterHp({
   side: Side
   hitKey: number | null
   change?: { heal: number; damage: number; key: number }
+  rage: number
+  status?: Status
+  desperateReady: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -153,12 +180,61 @@ function FighterHp({
           </span>
         )}
       </span>
+      <RageBar rage={rage} ready={desperateReady} />
+      <StatusPills status={status} />
     </div>
+  )
+}
+
+/** Barra della rimonta: si riempie incassando colpi, sblocca la mossa disperata. */
+function RageBar({ rage, ready }: { rage: number; ready: boolean }) {
+  const full = rage >= RAGE_MAX
+  return (
+    <div className="flex items-center gap-1.5" title="Barra della rimonta">
+      <span className="text-[9px] font-extrabold tracking-wide" style={{ color: '#6B1FD1' }}>
+        RIMONTA
+      </span>
+      <div
+        className="h-[7px] flex-1 overflow-hidden rounded-full border-2 border-ink bg-white"
+        role="meter"
+        aria-label="Barra della rimonta"
+        aria-valuemin={0}
+        aria-valuemax={RAGE_MAX}
+        aria-valuenow={rage}
+      >
+        <div
+          className={ready ? 'a-wiggle' : ''}
+          style={{ width: `${(100 * Math.min(rage, RAGE_MAX)) / RAGE_MAX}%`, height: '100%', background: full ? '#8B2CF5' : '#C9A4FF', transition: 'width .7s .35s' }}
+        />
+      </div>
+    </div>
+  )
+}
+
+const STATUS_PILLS: [keyof Status, string, string, string][] = [
+  ['burn', 'IN FIAMME', '#FF4B3E', '#fff'],
+  ['charged', 'CARICO', '#FFB020', '#16141a'],
+  ['shield', 'SCUDO', '#7CE0FF', '#16141a'],
+  ['stunned', 'STORDITO', '#16141a', '#FFE14D'],
+]
+
+function StatusPills({ status }: { status?: Status }) {
+  const on = STATUS_PILLS.filter(([k]) => status?.[k])
+  if (!on.length) return null
+  return (
+    <span className="flex flex-wrap gap-1">
+      {on.map(([k, label, bg, fg]) => (
+        <span key={k} className="a-pop rounded-md border-2 border-ink px-1 text-[9px] font-extrabold tracking-wide" style={{ background: bg, color: fg }}>
+          {label}
+        </span>
+      ))}
+    </span>
   )
 }
 
 function Scoreboard({ state, hp, hit, round }: { state: MatchState; hp: [number, number]; hit: { key: number; sides: Side[] }; round?: RoundResult }) {
   const nick = state.fight.opening?.nicknames ?? ['', '']
+  const fs = state.fight.fs
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
       {([0, 1] as Side[]).map((s) => (
@@ -170,6 +246,9 @@ function Scoreboard({ state, hp, hit, round }: { state: MatchState; hp: [number,
             side={s}
             hitKey={hit.sides.includes(s) ? hit.key : null}
             change={round ? { heal: round.heal[s], damage: round.damage[s], key: hit.key } : undefined}
+            rage={fs.rage?.[s] ?? 0}
+            status={fs.status?.[s]}
+            desperateReady={!state.fight.end && !blockedReason(fs, s, 'disperata')}
           />
         </div>
       ))}
@@ -187,6 +266,7 @@ export const MOVE_STYLE: Record<MoveType, { bg: string; fg: string }> = {
   difesa: { bg: '#7CE0FF', fg: '#16141a' },
   cura: { bg: '#8CF0A8', fg: '#16141a' },
   super: { bg: '#16141a', fg: '#FFE14D' },
+  disperata: { bg: '#8B2CF5', fg: '#fff' },
 }
 
 function TypeTag({ type, force, effect, weak }: { type: MoveType; force?: Force; effect?: Move['effect']; weak?: boolean }) {
@@ -228,8 +308,23 @@ function RulesStrip() {
           <span>{MOVE_INFO[t].rule}</span>
         </li>
       ))}
-      <li className="mt-1">Ogni mostro ha le sue 4 mosse, decise dal personaggio. I pallini sono la forza: ●○○ debole, ●●● forte.</li>
+      <li className="mt-1">Ogni mostro ha le sue mosse, decise dal personaggio. I pallini sono la forza: ●○○ debole, ●●● forte.</li>
+      <li className="mt-1 font-extrabold">Effetti delle mosse</li>
+      {(Object.keys(FX_INFO) as MoveFx[]).map((fx) => (
+        <li key={fx} className="flex items-start gap-2">
+          <FxTag fx={fx} />
+          <span>{FX_INFO[fx].rule}</span>
+        </li>
+      ))}
     </ul>
+  )
+}
+
+function FxTag({ fx }: { fx: MoveFx }) {
+  return (
+    <span className="inline-block shrink-0 rounded-md border-2 border-ink bg-white px-1.5 text-[11px] font-extrabold tracking-wide whitespace-nowrap uppercase" style={{ color: '#6B1FD1' }}>
+      {FX_INFO[fx].label}
+    </span>
   )
 }
 
@@ -334,7 +429,11 @@ function MovePicker({ state, dispatch }: ScreenProps) {
               className="choice items-start"
               aria-pressed={on}
               disabled={!!blocked}
-              style={{ transform: `rotate(${[-1, 0.7, -0.5, 0.9][i]}deg) scale(${on ? 1.03 : 1})`, opacity: blocked ? 0.5 : 1 }}
+              style={{
+                transform: `rotate(${[-1, 0.7, -0.5, 0.9, -0.6][i] ?? 0}deg) scale(${on ? 1.03 : 1})`,
+                opacity: blocked ? 0.5 : 1,
+                ...(m.type === 'disperata' && !blocked ? { background: '#E9D8FF', boxShadow: '6px 6px 0 #8B2CF5' } : {}),
+              }}
               onClick={() => {
                 play('select')
                 vibrate(10)
@@ -344,10 +443,16 @@ function MovePicker({ state, dispatch }: ScreenProps) {
               <span className="flex flex-col gap-1">
                 <span className="flex flex-wrap items-center gap-2">
                   <TypeTag type={m.type} force={m.force} effect={m.effect} weak={m.weak} />
+                  {m.fx && <FxTag fx={m.fx} />}
                   {blocked && <span className="text-[11px] font-extrabold">{blocked}</span>}
                 </span>
                 <b className="text-[17px] leading-tight font-extrabold">{m.name}</b>
                 <span className="text-[13px] leading-snug font-medium">{m.desc}</span>
+                {m.fx && (
+                  <span className="text-[12px] leading-snug font-bold" style={{ color: '#6B1FD1' }}>
+                    {FX_INFO[m.fx].rule}
+                  </span>
+                )}
               </span>
             </button>
           </div>
@@ -443,7 +548,7 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
       </div>
       {([0, 1] as Side[]).map((s) => {
         const m = opening.moves[s][round.choices[s]]
-        const big = m.type === 'super'
+        const big = m.type === 'super' || m.type === 'disperata'
         return (
           <div key={s} className="flex flex-col gap-2">
             <div
@@ -460,6 +565,15 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
               {round.sfx[s]}
             </div>
             <JudgeStamp efficacy={round.efficacy[s]} verdict={round.verdicts?.[s] ?? ''} side={s} delay={0.5 + s * 0.7} />
+            {round.notes?.[s]?.length ? (
+              <div className={`a-pop flex flex-wrap gap-1 ${s === 0 ? 'self-start' : 'self-end'}`} style={anim(0.6 + s * 0.7)}>
+                {round.notes[s].map((n) => (
+                  <span key={n} className="rounded-md border-2 border-ink bg-white px-1.5 text-[11px] font-extrabold tracking-wide" style={{ color: '#6B1FD1' }}>
+                    {n}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
         )
       })}

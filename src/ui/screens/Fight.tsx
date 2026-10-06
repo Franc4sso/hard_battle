@@ -453,6 +453,9 @@ function MovePicker({ state, dispatch }: ScreenProps) {
                     {FX_INFO[m.fx].rule}
                   </span>
                 )}
+                {m.type === 'cura' && fs.hp[who] >= MAX_HP && !blocked && (
+                  <span className="text-[12px] leading-snug font-bold text-mute">Sei in piena forma: adesso la cura vale solo per il suo effetto.</span>
+                )}
               </span>
             </button>
           </div>

@@ -161,7 +161,7 @@ export const SUPER_FROM_ROUND = 3
 
 const ATTACK = 23
 const SUPER = 36
-const DESPERATE = 34
+const DESPERATE = 40
 const HEAL = 14
 /** Superpotere curativo: tanta vita, e intanto para come una difesa forte. */
 const SUPER_HEAL = 30
@@ -265,8 +265,13 @@ export function roundEffects(
     // colpo dell'avversario
     let incoming = 0
     if (hitsHard(fm)) {
-      const base = fm.type === 'attacco' ? ATTACK * FORCE_MULT[fm.force] * (rule === 'furia' ? 1.5 : 1) : fm.type === 'disperata' ? DESPERATE : SUPER
-      incoming = base * (fm.weak ? WEAK_SUPER : 1) * (status[foe].charged ? CHARGE : 1) * eff[foe] * jitter() * heat
+      if (fm.type === 'disperata') {
+        // Rimette in partita, non chiude la rissa da sola: niente escalation, niente carica.
+        incoming = DESPERATE * eff[foe] * jitter()
+      } else {
+        const base = fm.type === 'attacco' ? ATTACK * FORCE_MULT[fm.force] * (rule === 'furia' ? 1.5 : 1) : SUPER
+        incoming = base * (fm.weak ? WEAK_SUPER : 1) * (status[foe].charged ? CHARGE : 1) * eff[foe] * jitter() * heat
+      }
       const feint = fm.type === 'attacco' && fm.fx === 'finta'
       const unstoppable = fm.type === 'disperata' || feint
       const hitKind = fm.type === 'attacco' ? 'attacco' : 'super'
@@ -400,9 +405,10 @@ export function playRound(
     const foe: Side = me === 0 ? 1 : 0
     const m = moves[me]
     if (status[me].burn) notes[me].push(`IN FIAMME −${status[me].burn}`)
-    if (status[me].charged && hitsHard(m)) notes[me].push('COLPO CARICO')
-    // La carica non usata resta; un colpo la consuma.
-    nextStatus[me].charged = m.fx === 'carica' || (status[me].charged && !hitsHard(m))
+    const usesCharge = hitsHard(m) && m.type !== 'disperata'
+    if (status[me].charged && usesCharge) notes[me].push('COLPO CARICO')
+    // La carica non usata resta; un colpo la consuma (la disperata non la usa).
+    nextStatus[me].charged = m.fx === 'carica' || (status[me].charged && !usesCharge)
     if (m.fx === 'carica') notes[me].push('SI CARICA')
     if (m.fx === 'scudo') {
       nextStatus[me].shield = true

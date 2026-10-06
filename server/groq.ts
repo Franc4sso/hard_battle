@@ -173,7 +173,8 @@ class RateLimitError extends Error {
 }
 
 /** Se Groq chiede di aspettare poco, conviene aspettare invece di arrendersi. */
-const MAX_WAIT_S = 6
+// Le funzioni Netlify gratuite si fermano a 10 s: attesa + chiamata devono starci dentro.
+const MAX_WAIT_S = 4
 
 async function askModel(user: string, cfg: AiConfig, model: string): Promise<Record<string, unknown>> {
   const doFetch = cfg.fetch ?? fetch

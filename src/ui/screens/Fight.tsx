@@ -1,25 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  EVENT_RULES,
-  FX_INFO,
+  CUSTOM_MAX,
+  GOOD_STAMPS,
+  HIT_LABEL,
   MAX_HP,
-  MAX_ROUNDS,
-  MOVE_INFO,
-  RAGE_MAX,
-  blockedReason,
-  heatOf,
+  choiceText,
+  cleanCustom,
+  hpState,
   mvpOf,
-  stampOf,
-  type ArenaEvent,
-  type Force,
+  type Choice,
   type Monster,
-  type Move,
-  type MoveFx,
-  type MoveType,
-  type Opening,
   type RoundResult,
   type Side,
-  type Status,
+  type Stamp,
 } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
@@ -27,7 +20,7 @@ import { currentEvent, matchWinner, nextChooser, other, type MatchState } from '
 import { Button, Footer, HpBar, MonsterCard, PLAYER_COLORS, PLAYER_TEXT, anim } from '../components'
 import type { ScreenProps } from './Draft'
 
-/** Chiede presentazione e mosse (una sola volta per round) e le mette nello stato. */
+/** Chiede presentazione e prime mosse (una sola volta per round) e le mette nello stato. */
 function useOpening({ state, dispatch }: ScreenProps) {
   const ready = state.fight.opening !== null
   useEffect(() => {
@@ -47,7 +40,7 @@ function useOpening({ state, dispatch }: ScreenProps) {
 export function VersusScreen(props: ScreenProps) {
   const { state, dispatch } = props
   const [m0, m1] = state.monsters as [Monster, Monster]
-  // Le mosse si preparano mentre i giocatori si guardano i mostri.
+  // Presentazione e prime mosse si preparano mentre i giocatori si guardano i mostri.
   useOpening(props)
   useEffect(() => {
     play('versus')
@@ -105,6 +98,8 @@ function Waiting() {
   )
 }
 
+const characterOf = (state: MatchState, s: Side) => (state.monsters[s] as Monster).character.name
+
 // ---------- tabellone ----------
 
 const SHAKE: Keyframe[] = [
@@ -116,22 +111,20 @@ const SHAKE: Keyframe[] = [
   { transform: 'translate(0,0)' },
 ]
 
-/** Vita recuperata e persa, separate e ben leggibili: verde scuro su verde, bianco su rosso. */
-function Changes({ heal, damage, size = 'sm' }: { heal: number; damage: number; size?: 'sm' | 'lg' }) {
-  const cls = size === 'lg' ? 'px-2 text-[22px]' : 'px-1.5 text-[13px]'
-  if (!heal && !damage) return <span className={`comic rounded-md border-2 border-ink bg-white ${cls}`}>±0</span>
+const STATE_COLOR = ['#0B8F4A', '#0B8F4A', '#B86E00', '#D42A1E', '#16141a']
+
+/** Il timbro su chi è stato colpito in questo round. */
+function HitStamp({ round, side }: { round: RoundResult; side: Side }) {
+  const hit = round.hits[side]
+  const healed = round.heal[side] > 0 && hit === 0
+  const label = healed ? 'SI RIPRENDE' : HIT_LABEL[hit]
+  const style = healed ? { background: '#C9F7D9', color: '#0B6B3C' } : hit ? { background: '#FF4B3E', color: '#fff' } : { background: '#fff', color: '#16141a' }
   return (
-    <span className="flex gap-1">
-      {heal > 0 && (
-        <span className={`comic rounded-md border-2 border-ink ${cls}`} style={{ background: '#8CF0A8', color: '#0B5A2B' }}>
-          +{heal}
-        </span>
-      )}
-      {damage > 0 && (
-        <span className={`comic rounded-md border-2 border-ink text-white ${cls}`} style={{ background: '#E8332A' }}>
-          −{damage}
-        </span>
-      )}
+    <span
+      className="comic a-pop absolute -top-3 -right-2 rounded-lg border-[2.5px] border-ink px-1.5 text-[16px] leading-tight whitespace-nowrap"
+      style={{ ...anim(0.4, side ? -6 : 6), ...style }}
+    >
+      {label}
     </span>
   )
 }
@@ -141,100 +134,41 @@ function FighterHp({
   nickname,
   hp,
   side,
+  round,
+  roundKey,
   hitKey,
-  change,
-  rage,
-  status,
-  desperateReady,
 }: {
   name: string
   nickname: string
   hp: number
   side: Side
+  round?: RoundResult
+  roundKey: number
   hitKey: number | null
-  change?: { heal: number; damage: number; key: number }
-  rage: number
-  status?: Status
-  desperateReady: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     // Shake con Web Animations: niente remount, così la barra della vita scorre.
-    if (hitKey !== null && !matchMedia('(prefers-reduced-motion: reduce)').matches)
-      ref.current?.animate(SHAKE, { duration: 380, delay: 320, iterations: 2 })
+    if (hitKey !== null && !matchMedia('(prefers-reduced-motion: reduce)').matches) ref.current?.animate(SHAKE, { duration: 380, delay: 320, iterations: 2 })
   }, [hitKey])
+  const st = hpState(hp)
   return (
-    <div ref={ref} className="panel flex min-w-0 flex-col gap-1.5 px-2.5 py-2" style={{ boxShadow: '3px 3px 0 #16141a' }}>
+    <div ref={ref} className="panel relative flex min-w-0 flex-col gap-1.5 px-2.5 py-2" style={{ boxShadow: '3px 3px 0 #16141a' }}>
       <span className="label truncate text-[11px]" style={{ color: PLAYER_TEXT[side] }}>
         {name}
       </span>
       <b className="text-sm leading-tight font-extrabold">{nickname}</b>
       <HpBar hp={hp} />
-      <span className="flex min-h-[22px] flex-wrap items-center justify-between gap-1">
-        <span className="text-[11px] font-bold tabular-nums">
-          {hp} / {MAX_HP}
-        </span>
-        {change && (
-          <span key={change.key} className="a-pop" style={anim(0.35)}>
-            <Changes heal={change.heal} damage={change.damage} />
-          </span>
-        )}
+      <span className="comic text-[17px] leading-none" style={{ color: STATE_COLOR[st.level] }}>
+        {st.label}
       </span>
-      <RageBar rage={rage} ready={desperateReady} />
-      <StatusPills status={status} />
+      {round && <HitStamp key={roundKey} round={round} side={side} />}
     </div>
   )
 }
 
-/** Barra della rimonta: si riempie incassando colpi, sblocca la mossa disperata. */
-function RageBar({ rage, ready }: { rage: number; ready: boolean }) {
-  const full = rage >= RAGE_MAX
-  return (
-    <div className="flex items-center gap-1.5" title="Barra della rimonta">
-      <span className="text-[9px] font-extrabold tracking-wide" style={{ color: '#6B1FD1' }}>
-        RIMONTA
-      </span>
-      <div
-        className="h-[7px] flex-1 overflow-hidden rounded-full border-2 border-ink bg-white"
-        role="meter"
-        aria-label="Barra della rimonta"
-        aria-valuemin={0}
-        aria-valuemax={RAGE_MAX}
-        aria-valuenow={rage}
-      >
-        <div
-          className={ready ? 'a-wiggle' : ''}
-          style={{ width: `${(100 * Math.min(rage, RAGE_MAX)) / RAGE_MAX}%`, height: '100%', background: full ? '#8B2CF5' : '#C9A4FF', transition: 'width .7s .35s' }}
-        />
-      </div>
-    </div>
-  )
-}
-
-const STATUS_PILLS: [keyof Status, string, string, string][] = [
-  ['burn', 'IN FIAMME', '#FF4B3E', '#fff'],
-  ['charged', 'CARICO', '#FFB020', '#16141a'],
-  ['shield', 'SCUDO', '#7CE0FF', '#16141a'],
-  ['stunned', 'STORDITO', '#16141a', '#FFE14D'],
-]
-
-function StatusPills({ status }: { status?: Status }) {
-  const on = STATUS_PILLS.filter(([k]) => status?.[k])
-  if (!on.length) return null
-  return (
-    <span className="flex flex-wrap gap-1">
-      {on.map(([k, label, bg, fg]) => (
-        <span key={k} className="a-pop rounded-md border-2 border-ink px-1 text-[9px] font-extrabold tracking-wide" style={{ background: bg, color: fg }}>
-          {label}
-        </span>
-      ))}
-    </span>
-  )
-}
-
-function Scoreboard({ state, hp, hit, round }: { state: MatchState; hp: [number, number]; hit: { key: number; sides: Side[] }; round?: RoundResult }) {
+function Scoreboard({ state, hp, round, hitKey }: { state: MatchState; hp: [number, number]; round?: RoundResult; hitKey: number }) {
   const nick = state.fight.opening?.nicknames ?? ['', '']
-  const fs = state.fight.fs
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
       {([0, 1] as Side[]).map((s) => (
@@ -244,11 +178,9 @@ function Scoreboard({ state, hp, hit, round }: { state: MatchState; hp: [number,
             nickname={nick[s]}
             hp={hp[s]}
             side={s}
-            hitKey={hit.sides.includes(s) ? hit.key : null}
-            change={round ? { heal: round.heal[s], damage: round.damage[s], key: hit.key } : undefined}
-            rage={fs.rage?.[s] ?? 0}
-            status={fs.status?.[s]}
-            desperateReady={!state.fight.end && !blockedReason(fs, s, 'disperata')}
+            round={round}
+            roundKey={hitKey}
+            hitKey={round && round.hits[s] > 0 ? hitKey : null}
           />
         </div>
       ))}
@@ -259,78 +191,8 @@ function Scoreboard({ state, hp, hit, round }: { state: MatchState; hp: [number,
   )
 }
 
-// ---------- mosse ----------
-
-export const MOVE_STYLE: Record<MoveType, { bg: string; fg: string }> = {
-  attacco: { bg: '#FF4B3E', fg: '#fff' },
-  difesa: { bg: '#7CE0FF', fg: '#16141a' },
-  cura: { bg: '#8CF0A8', fg: '#16141a' },
-  super: { bg: '#16141a', fg: '#FFE14D' },
-  disperata: { bg: '#8B2CF5', fg: '#fff' },
-}
-
-function TypeTag({ type, force, effect, weak }: { type: MoveType; force?: Force; effect?: Move['effect']; weak?: boolean }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-md border-2 border-ink px-1.5 text-[11px] font-extrabold tracking-wide uppercase"
-      style={{ background: MOVE_STYLE[type].bg, color: MOVE_STYLE[type].fg }}
-    >
-      {MOVE_INFO[type].label}
-      {type === 'super' && effect === 'cura' && <span className="normal-case">· cura</span>}
-      {type === 'super' && weak && <span className="normal-case">· trappola</span>}
-      {force && type !== 'super' && (
-        <span aria-label={`forza ${force} su 3`} className="tracking-[-0.1em]">
-          {'●'.repeat(force)}
-          <span className="opacity-35">{'●'.repeat(3 - force)}</span>
-        </span>
-      )}
-    </span>
-  )
-}
-
-/** Dal round 4 i colpi fanno più male: lo si vede subito. */
-function HeatBadge({ roundNo }: { roundNo: number }) {
-  const heat = heatOf(roundNo)
-  if (heat === 1) return null
-  return (
-    <span className="pill a-pop" style={{ background: heat > 1.5 ? '#FF4B3E' : '#FFB020', color: heat > 1.5 ? '#fff' : '#16141a' }}>
-      LA RISSA SI SCALDA · COLPI ×{String(heat).replace('.', ',')}
-    </span>
-  )
-}
-
-function RulesStrip() {
-  return (
-    <ul className="panel flex flex-col gap-1 px-3 py-2.5 text-[12px] leading-snug font-medium">
-      {(Object.keys(MOVE_INFO) as MoveType[]).map((t) => (
-        <li key={t} className="flex items-start gap-2">
-          <TypeTag type={t} />
-          <span>{MOVE_INFO[t].rule}</span>
-        </li>
-      ))}
-      <li className="mt-1">Ogni mostro ha le sue mosse, decise dal personaggio. I pallini sono la forza: ●○○ debole, ●●● forte.</li>
-      <li className="mt-1 font-extrabold">Effetti delle mosse</li>
-      {(Object.keys(FX_INFO) as MoveFx[]).map((fx) => (
-        <li key={fx} className="flex items-start gap-2">
-          <FxTag fx={fx} />
-          <span>{FX_INFO[fx].rule}</span>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function FxTag({ fx }: { fx: MoveFx }) {
-  return (
-    <span className="inline-block shrink-0 rounded-md border-2 border-ink bg-white px-1.5 text-[11px] font-extrabold tracking-wide whitespace-nowrap uppercase" style={{ color: '#6B1FD1' }}>
-      {FX_INFO[fx].label}
-    </span>
-  )
-}
-
 /** L'arena interviene: si vede prima di scegliere, così ci si può adattare. */
-function EventBanner({ event, compact = false }: { event: ArenaEvent; compact?: boolean }) {
-  const info = EVENT_RULES[event.rule]
+function EventBanner({ text, compact = false }: { text: string; compact?: boolean }) {
   useEffect(() => {
     if (!compact) {
       play('twist')
@@ -342,50 +204,48 @@ function EventBanner({ event, compact = false }: { event: ArenaEvent; compact?: 
       className={`a-slam flex w-full flex-col gap-1 rounded-[18px] border-[3px] border-ink bg-ink text-left text-white ${compact ? 'p-2.5' : 'p-3.5'}`}
       style={{ ...anim(compact ? 0 : 0.15, compact ? 0 : -1.5), boxShadow: '5px 5px 0 #FFB020' }}
     >
-      <span className={`comic text-sun ${compact ? 'text-[18px]' : 'text-[22px]'}`}>L’ARENA INTERVIENE · {info.title.toUpperCase()}</span>
-      {!compact && <span className="text-[14px] leading-snug font-medium">{event.text}</span>}
-      <span className="text-[13px] leading-snug font-extrabold" style={{ color: '#FFB020' }}>
-        Solo questo round: {info.rule}
-      </span>
+      <span className={`comic text-sun ${compact ? 'text-[17px]' : 'text-[22px]'}`}>L’ARENA INTERVIENE!</span>
+      <span className={`${compact ? 'text-[13px]' : 'text-[15px]'} leading-snug font-medium`}>{text}</span>
     </div>
   )
 }
 
-/** Il timbro del giudice: compare solo quando la mossa è stata davvero azzeccata o un disastro. */
-function JudgeStamp({ efficacy, verdict, side, delay }: { efficacy: number; verdict: string; side: Side; delay: number }) {
-  const stamp = stampOf(efficacy)
-  if (!stamp) return null
-  const color = stamp.good ? '#0B8F4A' : '#D42A1E'
+function StampBadge({ stamp, side, delay }: { stamp: Stamp; side: Side; delay: number }) {
+  const color = GOOD_STAMPS.has(stamp) ? '#6B1FD1' : stamp === 'DISASTRO' ? '#D42A1E' : '#5D5866'
   return (
-    <div className={`a-slam flex max-w-[85%] flex-col gap-0.5 ${side === 0 ? 'self-start' : 'items-end self-end text-right'}`} style={anim(delay, side ? 4 : -4)}>
-      <span className="comic rounded-lg border-[3px] bg-white/85 px-2.5 py-0.5 text-[22px] leading-tight" style={{ color, borderColor: color }}>
-        {stamp.label}
-      </span>
-      {verdict && <span className="text-[12px] leading-snug font-bold italic">«{verdict}»</span>}
-    </div>
+    <span
+      className="comic a-slam shrink-0 rounded-lg border-[3px] bg-white px-2 text-[18px] leading-tight"
+      style={{ ...anim(delay, side ? -7 : 7), color, borderColor: color }}
+    >
+      {stamp}
+    </span>
   )
 }
 
-/** Ognuno sceglie la mossa di nascosto, passandosi il telefono. */
+// ---------- scelta della mossa ----------
+
+/** Ognuno sceglie la mossa di nascosto, passandosi il telefono: 3 suggerite o una inventata. */
 function MovePicker({ state, dispatch }: ScreenProps) {
   const who = nextChooser(state)
   const [covered, setCovered] = useState(true)
-  const [selected, setSelected] = useState<number | null>(null)
+  const [selected, setSelected] = useState<number | 'custom' | null>(null)
+  const [draft, setDraft] = useState('')
   if (who === undefined) return null
-  const opening = state.fight.opening as Opening
-  const fs = state.fight.fs
+  const f = state.fight
   const me = state.players[who].name
   const them = state.players[other(who)].name
-  const foeLast = state.fight.rounds.at(-1)
-  const roundNo = state.fight.rounds.length + 1
+  const foe = other(who)
+  const last = f.rounds.at(-1)
+  const roundNo = f.rounds.length + 1
   const event = currentEvent(state)
+  const custom = cleanCustom(draft)
+  const ready = selected === 'custom' ? custom.length > 0 : selected !== null
 
   if (covered)
     return (
       <div key={`cover-${who}-${roundNo}`} className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
         <span className="comic a-pop rounded-full bg-ink px-5 py-1 text-[22px] text-sun">ROUND {roundNo}</span>
-        <HeatBadge roundNo={roundNo} />
-        {event && <EventBanner event={event} />}
+        {event && <EventBanner text={event.text} />}
         <span className="label">Passa il telefono a</span>
         <h2 className="title-comic a-slam text-[64px] break-all" style={{ ...anim(0.1, -3), color: PLAYER_COLORS[who] }}>
           {me.toUpperCase()}
@@ -406,33 +266,49 @@ function MovePicker({ state, dispatch }: ScreenProps) {
       </div>
     )
 
+  const submit = () => {
+    if (!ready || selected === null) return
+    const choice: Choice = selected === 'custom' ? { custom } : { pick: selected }
+    play('pick')
+    vibrate(25)
+    dispatch({ type: 'choose', side: who, choice })
+    setSelected(null)
+    setDraft('')
+    setCovered(true)
+  }
+
   return (
     <div className="flex flex-1 flex-col gap-3">
-      <h2 className="title-comic a-slam text-[40px]" style={anim(0, -2)}>
-        LA TUA MOSSA,
-        <br />
-        <span style={{ color: PLAYER_COLORS[who] }}>{me.toUpperCase()}</span>
+      <h2 className="title-comic a-slam text-[38px]" style={anim(0, -2)}>
+        COSA FA <span style={{ color: PLAYER_COLORS[who] }}>{characterOf(state, who).toUpperCase()}</span>?
       </h2>
-      {event && <EventBanner event={event} compact />}
-      {foeLast && (
-        <p className="text-[13px] font-bold">
-          Nel round precedente {them} ha usato: {opening.moves[other(who)][foeLast.choices[other(who)]].name}
-        </p>
-      )}
-      {opening.moves[who].map((m, i) => {
-        const blocked = blockedReason(fs, who, m.type, event?.rule)
+      {event && <EventBanner text={event.text} compact />}
+      <div className="panel a-rise flex flex-col gap-1 px-3 py-2.5" style={anim(0.05)}>
+        <span className="label text-[11px]">
+          Contro {characterOf(state, foe)} · {hpState(f.fs.hp[foe]).label.toLowerCase()}
+        </span>
+        <span className="text-[14px] leading-snug font-semibold">
+          {last ? (
+            <>
+              L’ultima volta: <i>«{last.actions[foe]}»</i>
+            </>
+          ) : (
+            'Primo round: nessuno sa ancora cosa farà.'
+          )}
+        </span>
+      </div>
+      {f.offers[who].map((o, i) => {
         const on = selected === i
         return (
-          <div key={i} className="a-rise" style={anim(0.06 + i * 0.06)}>
+          <div key={`${roundNo}-${i}`} className="a-rise" style={anim(0.1 + i * 0.07)}>
             <button
               type="button"
-              className="choice items-start"
+              className="choice flex-col items-start gap-1.5"
               aria-pressed={on}
-              disabled={!!blocked}
               style={{
-                transform: `rotate(${[-1, 0.7, -0.5, 0.9, -0.6][i] ?? 0}deg) scale(${on ? 1.03 : 1})`,
-                opacity: blocked ? 0.5 : 1,
-                ...(m.type === 'disperata' && !blocked ? { background: '#E9D8FF', boxShadow: '6px 6px 0 #8B2CF5' } : {}),
+                borderRadius: i % 2 ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+                transform: `rotate(${[-0.8, 0.6, -0.4][i] ?? 0}deg) scale(${on ? 1.02 : 1})`,
+                ...(o.finisher && !on ? { background: '#E9D8FF', boxShadow: '6px 6px 0 #8B2CF5' } : {}),
               }}
               onClick={() => {
                 play('select')
@@ -440,39 +316,48 @@ function MovePicker({ state, dispatch }: ScreenProps) {
                 setSelected(i)
               }}
             >
-              <span className="flex flex-col gap-1">
-                <span className="flex flex-wrap items-center gap-2">
-                  <TypeTag type={m.type} force={m.force} effect={m.effect} weak={m.weak} />
-                  {m.fx && <FxTag fx={m.fx} />}
-                  {blocked && <span className="text-[11px] font-extrabold">{blocked}</span>}
-                </span>
-                <b className="text-[17px] leading-tight font-extrabold">{m.name}</b>
-                <span className="text-[13px] leading-snug font-medium">{m.desc}</span>
-                {m.fx && (
-                  <span className="text-[12px] leading-snug font-bold" style={{ color: '#6B1FD1' }}>
-                    {FX_INFO[m.fx].rule}
-                  </span>
-                )}
-                {m.type === 'cura' && fs.hp[who] >= MAX_HP && !blocked && (
-                  <span className="text-[12px] leading-snug font-bold text-mute">Sei in piena forma: adesso la cura vale solo per il suo effetto.</span>
-                )}
-              </span>
+              {o.finisher && <span className="comic rounded-md bg-ink px-2 text-[15px] text-sun">COLPO FINALE</span>}
+              <span className="text-[17px] leading-snug font-bold">{o.text}</span>
             </button>
           </div>
         )
       })}
+      <div className="a-rise" style={anim(0.35)}>
+        {selected === 'custom' ? (
+          <div className="panel flex flex-col gap-2" style={{ background: '#FFE14D' }}>
+            <label htmlFor="custom-move" className="label">
+              La tua mossa
+            </label>
+            <textarea
+              id="custom-move"
+              className="field resize-none text-[16px] leading-snug"
+              style={{ fontWeight: 600 }}
+              rows={3}
+              maxLength={CUSTOM_MAX}
+              autoFocus
+              placeholder={`Es. "Gli ruba il ${(state.monsters[foe] as Monster).weapon.name.toLowerCase()} e lo usa contro di lui"`}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <span className="text-[12px] leading-snug font-bold text-mute">
+              {draft.length}/{CUSTOM_MAX} · Il giudice premia le idee furbe e fischia chi bara.
+            </span>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              play('select')
+              setSelected('custom')
+            }}
+          >
+            ✍️ Inventa la tua mossa
+          </button>
+        )}
+      </div>
       <div className="mt-auto pt-1">
-        <Button
-          disabled={selected === null}
-          onClick={() => {
-            if (selected === null) return
-            play('pick')
-            vibrate(25)
-            dispatch({ type: 'choose', side: who, move: selected })
-            setSelected(null)
-            setCovered(true)
-          }}
-        >
+        <Button disabled={!ready} onClick={submit}>
           FATTO. NASCONDI!
         </Button>
       </div>
@@ -480,12 +365,14 @@ function MovePicker({ state, dispatch }: ScreenProps) {
   )
 }
 
+// ---------- scontro e racconto ----------
+
 const MIN_REVEAL_MS = 1600
 
 /** Svela le due mosse; intanto il server giudica il round. */
 function Clash({ state, dispatch }: ScreenProps) {
-  const opening = state.fight.opening as Opening
-  const choices = state.fight.choices as [number, number]
+  const f = state.fight
+  const choices = f.choices as [Choice, Choice]
   const [waited, setWaited] = useState(false)
 
   useEffect(() => {
@@ -517,79 +404,61 @@ function Clash({ state, dispatch }: ScreenProps) {
   return (
     <div className="flex flex-1 flex-col gap-4">
       <span className="comic self-center rounded-full bg-ink px-5 py-1 text-[22px] text-sun">MOSSE SVELATE</span>
-      {([0, 1] as Side[]).map((s) => {
-        const m = opening.moves[s][choices[s]]
-        return (
-          <div key={s} className={`panel a-slam flex flex-col gap-1 ${s === 0 ? 'mr-6' : 'ml-6'}`} style={anim(0.15 + s * 0.35, s ? 2 : -2)}>
-            <span className="flex items-center gap-2">
-              <span className="label" style={{ color: PLAYER_TEXT[s] }}>
-                {state.players[s].name}
-              </span>
-              <TypeTag type={m.type} effect={m.effect} weak={m.weak} />
-            </span>
-            <b className="comic text-[26px] leading-none">{m.name}</b>
-          </div>
-        )
-      })}
-      <p className="a-wiggle mt-2 self-center text-center text-[15px] font-extrabold">{waited ? 'Il giudice sta decidendo…' : 'SCONTRO!'}</p>
+      {([0, 1] as Side[]).map((s) => (
+        <div key={s} className={`bubble a-slam flex flex-col gap-1 ${s === 0 ? 'bubble-l' : 'bubble-r'}`} style={anim(0.15 + s * 0.35, s ? 2 : -2)}>
+          <span className="label" style={{ color: PLAYER_TEXT[s] }}>
+            {characterOf(state, s)}
+          </span>
+          <span className="text-[16px] leading-snug font-bold">{choiceText(f.offers[s], choices[s])}</span>
+        </div>
+      ))}
+      <p className="a-wiggle mt-2 self-center text-center text-[15px] font-extrabold">{waited ? 'Il giudice sta guardando il replay…' : 'SCONTRO!'}</p>
     </div>
   )
 }
 
 function RoundView({ state, round, index }: { state: MatchState; round: RoundResult; index: number }) {
-  const opening = state.fight.opening as Opening
+  const w = round.winner
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        <span className="comic rounded-full bg-ink px-5 py-1 text-[22px] text-sun">ROUND {index + 1}</span>
-        <HeatBadge roundNo={index + 1} />
-        {round.event && (
-          <span className="pill" style={{ background: '#16141a', color: '#FFB020' }}>
-            ARENA: {EVENT_RULES[round.event].title.toUpperCase()}
-          </span>
-        )}
-      </div>
-      {([0, 1] as Side[]).map((s) => {
-        const m = opening.moves[s][round.choices[s]]
-        const big = m.type === 'super' || m.type === 'disperata'
-        return (
-          <div key={s} className="flex flex-col gap-2">
-            <div
-              className={`a-rise flex flex-col gap-1.5 ${big ? 'rounded-[18px] border-[3px] border-ink bg-ink p-3.5 text-white' : `bubble ${s === 0 ? 'bubble-l' : 'bubble-r'}`}`}
-              style={{ ...anim(s * 0.7, big ? (s ? 1 : -1) : undefined), ...(big ? { boxShadow: '5px 5px 0 #FF4B3E' } : {}) }}
-            >
-              <span className="flex flex-wrap items-center gap-2">
-                <TypeTag type={m.type} force={m.force} effect={m.effect} weak={m.weak} />
-                <b className={`text-[13px] font-extrabold ${big ? 'text-sun' : ''}`}>{m.name}</b>
+      <span className="comic self-center rounded-full bg-ink px-5 py-1 text-[22px] text-sun">ROUND {index + 1}</span>
+      {round.event && (
+        <div className="a-rise rounded-[14px] border-[3px] border-ink bg-ink px-3 py-2 text-[13px] leading-snug font-medium text-white" style={anim(0)}>
+          <b className="text-sun">L’arena:</b> {round.event}
+        </div>
+      )}
+      {([0, 1] as Side[]).map((s) => (
+        <div
+          key={s}
+          className={`panel a-rise flex flex-col gap-1.5 ${s === 0 ? 'mr-4' : 'ml-4'}`}
+          style={{ ...anim(0.1 + s * 0.45, s ? 0.8 : -0.8), boxShadow: `5px 5px 0 ${PLAYER_COLORS[s]}` }}
+        >
+          <span className="flex items-start justify-between gap-2">
+            <span className="flex min-w-0 flex-col">
+              <span className="label text-[11px]" style={{ color: PLAYER_TEXT[s] }}>
+                {characterOf(state, s)}
+                {round.custom[s] ? ' · mossa inventata' : ''}
               </span>
-              <span className="text-[15px] leading-snug font-medium">{round.actions[s]}</span>
-            </div>
-            <div className={`sfx a-slam ${s === 0 ? 'ml-4 self-start' : 'mr-4 self-end'}`} style={anim(0.35 + s * 0.7, s ? 6 : -6)}>
-              {round.sfx[s]}
-            </div>
-            <JudgeStamp efficacy={round.efficacy[s]} verdict={round.verdicts?.[s] ?? ''} side={s} delay={0.5 + s * 0.7} />
-            {round.notes?.[s]?.length ? (
-              <div className={`a-pop flex flex-wrap gap-1 ${s === 0 ? 'self-start' : 'self-end'}`} style={anim(0.6 + s * 0.7)}>
-                {round.notes[s].map((n) => (
-                  <span key={n} className="rounded-md border-2 border-ink bg-white px-1.5 text-[11px] font-extrabold tracking-wide" style={{ color: '#6B1FD1' }}>
-                    {n}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        )
-      })}
-      <div className="a-pop flex flex-wrap justify-center gap-3" style={anim(1.4)}>
-        {([0, 1] as Side[]).map((s) => (
-          <span key={s} className="pill gap-2 text-base">
-            <span style={{ color: PLAYER_TEXT[s] }}>{state.players[s].name}</span>
-            <Changes heal={round.heal[s]} damage={round.damage[s]} size="lg" />
+              <b className="comic text-[26px] leading-none">{round.moveNames[s]}</b>
+            </span>
+            <StampBadge stamp={round.stamps[s]} side={s} delay={0.35 + s * 0.45} />
           </span>
-        ))}
+          <span className="text-[14px] leading-snug font-medium italic">«{round.actions[s]}»</span>
+        </div>
+      ))}
+      <div className="sfx a-slam self-center text-center text-[40px]" style={anim(1, -5)}>
+        {round.sfx}
+      </div>
+      <p className="bubble a-rise rounded-[18px] text-[15.5px]" style={anim(1.2)}>
+        {round.scene}
+      </p>
+      <div className="a-rise flex flex-col gap-1 rounded-[18px] border-[3px] border-ink bg-ink p-3.5 text-white" style={{ ...anim(1.6, -0.6), boxShadow: '5px 5px 0 #FFB020' }}>
+        <span className="label text-[11px] text-sun">Il giudice</span>
+        <span className="comic text-[26px] leading-none text-sun">{w === null ? 'ROUND PARI' : `ROUND A ${characterOf(state, w).toUpperCase()}`}</span>
+        {round.why && <span className="text-[14.5px] leading-snug font-medium">{round.why}</span>}
       </div>
       {round.end && (
-        <div className="title-comic a-slam mt-1 text-center text-[64px] text-red" style={anim(1.7, -6)}>
+        <div className="title-comic a-slam mt-1 text-center text-[64px] text-red" style={anim(2, -6)}>
           {round.end.byJury ? 'GIURIA!' : 'K.O.!'}
         </div>
       )}
@@ -610,8 +479,7 @@ export function BattleScreen(props: ScreenProps) {
     if (count === 0) return
     setViewing(count - 1)
     const r = rounds[count - 1]
-    const strongest = r.end ? 'ko' : r.types.includes('super') ? 'power' : r.damage.some((d) => d > 0) ? 'hit' : 'twist'
-    play(strongest)
+    play(r.end ? 'ko' : r.hits.some((h) => h === 3) ? 'power' : r.hits.some((h) => h > 0) ? 'hit' : 'twist')
     vibrate(r.end ? [80, 50, 160] : 50)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [count])
@@ -620,12 +488,11 @@ export function BattleScreen(props: ScreenProps) {
 
   const shownRound = viewing !== null && viewing >= 0 ? rounds[viewing] : undefined
   const hp: [number, number] = shownRound ? shownRound.hp : viewing === -1 ? [MAX_HP, MAX_HP] : state.fight.fs.hp
-  const hit = { key: viewing ?? -2, sides: shownRound ? ([0, 1] as Side[]).filter((s) => shownRound.damage[s] > 0) : [] }
   const choosing = viewing === null && nextChooser(state) !== undefined
 
   return (
     <div className="screen">
-      <Scoreboard state={state} hp={hp} hit={hit} round={shownRound} />
+      <Scoreboard state={state} hp={hp} round={shownRound} hitKey={viewing ?? -2} />
 
       {viewing === -1 && (
         <>
@@ -638,12 +505,12 @@ export function BattleScreen(props: ScreenProps) {
                 {opening.intro}
               </div>
             )}
-            <div className="a-rise" style={anim(0.5)}>
-              <RulesStrip />
-            </div>
-            <p className="a-rise text-center text-[13px] font-bold" style={anim(0.6)}>
-              Si combatte finché qualcuno crolla. Dal round 4 la rissa si scalda e i colpi fanno più male; dopo {MAX_ROUNDS} round decide la giuria.
-            </p>
+            <ul className="panel a-rise flex flex-col gap-1.5 px-3.5 py-3 text-[14px] leading-snug font-medium" style={anim(0.5)}>
+              <li>Ogni round scegli di nascosto una delle 3 mosse suggerite, oppure inventane una tu.</li>
+              <li>Le due mosse avvengono nello stesso istante: il giudice racconta la scena e decide chi ha la meglio.</li>
+              <li>Le mosse cambiano round dopo round, a seconda di come va la rissa.</li>
+              <li>Si combatte finché qualcuno crolla.</li>
+            </ul>
             {opening.source === 'offline' && (
               <p className="a-rise text-center text-[13px] font-bold" style={anim(0.7)}>
                 AI non raggiungibile: stasera racconta il narratore di riserva.
@@ -686,7 +553,7 @@ export function VerdictScreen({ state, dispatch }: ScreenProps) {
   const { opening, rounds, end } = state.fight
   const w = end!.winner
   const over = matchWinner(state) !== undefined
-  const mvp = mvpOf(rounds, w, opening!)
+  const mvp = mvpOf(rounds, w)
   useEffect(() => {
     play('win')
     vibrate([60, 40, 60, 40, 120])
@@ -700,7 +567,11 @@ export function VerdictScreen({ state, dispatch }: ScreenProps) {
           <br />
           {state.players[w].name.toUpperCase()}!
         </h1>
-        {end!.byJury && <span className="pill a-pop" style={anim(0.3)}>AI PUNTI, PER DECISIONE DELLA GIURIA</span>}
+        {end!.byJury && (
+          <span className="pill a-pop" style={anim(0.3)}>
+            PER DECISIONE DELLA GIURIA
+          </span>
+        )}
       </div>
       <div className="bubble a-rise rounded-[18px]" style={anim(0.4, 1)}>
         {end!.finale}

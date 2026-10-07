@@ -1,14 +1,19 @@
 import {
+  choiceSuggestion,
+  choiceText,
+  normalizeOffers,
   normalizeOpening,
+  offlineJudgement,
+  offlineOffers,
   offlineOpening,
-  offlineTexts,
   playRound,
+  type Choice,
   type FightState,
   type Fighter,
   type Monster,
-  type Move,
   type Opening,
   type RoundResult,
+  type Suggestion,
 } from '../../shared/battle'
 import { battleRequest, currentEvent, type MatchState } from './match'
 
@@ -49,7 +54,7 @@ export const fightersOf = (s: MatchState): [Fighter, Fighter] => {
 }
 
 /**
- * Presentazione e mosse. Parte appena si apre il VS, così quando si preme
+ * Presentazione e prime mosse. Parte appena si apre il VS, così quando si preme
  * COMBATTETE è già pronta. Senza AI le prepara il narratore di riserva.
  */
 export function requestOpening(s: MatchState): Promise<{ opening: Opening; token: string | null }> {
@@ -63,29 +68,39 @@ export function requestOpening(s: MatchState): Promise<{ opening: Opening; token
 
 function isRound(v: unknown): v is RoundResult {
   const r = v as RoundResult | null
-  return !!r && Array.isArray(r.hp) && Array.isArray(r.heal) && Array.isArray(r.verdicts) && Array.isArray(r.damage) && Array.isArray(r.actions) && Array.isArray(r.types)
+  return !!r && Array.isArray(r.hp) && Array.isArray(r.hits) && Array.isArray(r.actions) && Array.isArray(r.moveNames) && typeof r.scene === 'string'
 }
 
+type RoundOut = { round: RoundResult; next: FightState; offers: [Suggestion[], Suggestion[]]; token: string | null }
+
 /**
- * Un round: lo calcola il server (che giudica le mosse con l'AI) e rimanda lo
- * stato firmato. Se l'AI non risponde, il round lo gioca il narratore di
- * riserva con le stesse regole, e la rissa prosegue offline.
+ * Un round: lo giudica il server con l'AI e rimanda lo stato firmato e le mosse
+ * per il round dopo. Se l'AI non risponde, il round lo gioca il narratore di
+ * riserva e la rissa prosegue offline.
  */
-export function requestRound(s: MatchState): Promise<{ round: RoundResult; next: FightState; token: string | null }> {
+export function requestRound(s: MatchState): Promise<RoundOut> {
   const f = s.fight
-  const choices = f.choices as [number, number]
+  const choices = f.choices as [Choice, Choice]
   return once(`${s.seed}-${s.round}-r${f.rounds.length}`, async () => {
-    const opening = f.opening as Opening
-    const body = f.token ? await post({ stage: 'round', token: f.token, choices }) : null
-    // Lo stato del round dopo (vita, stati, rimonta) lo calcola il server: il telefono lo prende così com'è.
-    const serverNext = body?.next as FightState | undefined
-    if (body && isRound(body.round) && serverNext && Array.isArray(serverNext.hp) && Array.isArray(serverNext.status) && typeof body.token === 'string')
-      return { round: body.round, next: serverNext, token: body.token }
     const fighters = fightersOf(s)
-    const moves: [Move, Move] = [opening.moves[0][choices[0]], opening.moves[1][choices[1]]]
+    const body = f.token ? await post({ stage: 'round', token: f.token, choices }) : null
+    const next = body?.next as FightState | undefined
+    const rawOffers = body?.offers as unknown[] | undefined
+    if (body && isRound(body.round) && next && Array.isArray(next.hp) && Array.isArray(rawOffers) && typeof body.token === 'string') {
+      const offers: [Suggestion[], Suggestion[]] = [
+        normalizeOffers(rawOffers[0], offlineOffers(fighters, 0, next)),
+        normalizeOffers(rawOffers[1], offlineOffers(fighters, 1, next)),
+      ]
+      return { round: body.round, next, offers, token: body.token }
+    }
+    const actions: [string, string] = [choiceText(f.offers[0], choices[0]), choiceText(f.offers[1], choices[1])]
+    const tones = [choiceSuggestion(f.offers[0], choices[0])?.tone ?? null, choiceSuggestion(f.offers[1], choices[1])?.tone ?? null] as const
+    const judgement = offlineJudgement(fighters, f.fs, actions, [tones[0], tones[1]])
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]
-    const rule = currentEvent(s)?.rule
-    const { round, next } = playRound(f.fs, choices, moves, offlineTexts(fighters, opening, choices), names, Math.random, rule)
-    return { round, next, token: null }
+    const custom: [boolean, boolean] = ['custom' in choices[0], 'custom' in choices[1]]
+    const out = playRound(f.fs, actions, custom, judgement, names, Math.random, currentEvent(s))
+    // Le mosse del round dopo seguono la vita di adesso.
+    const offers: [Suggestion[], Suggestion[]] = [offlineOffers(fighters, 0, out.next), offlineOffers(fighters, 1, out.next)]
+    return { ...out, offers, token: null }
   })
 }

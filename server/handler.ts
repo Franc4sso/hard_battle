@@ -1,19 +1,21 @@
 import { deckOf, findCard, type Card, type Slot } from '../shared/cards'
 import {
   START,
-  blockedReason,
+  cleanCustom,
+  dedupeOffers,
   eventAt,
+  fixFinishers,
+  offlineOffers,
   playRound,
   scheduleEvents,
   type BattleRequest,
   type FightState,
   type Fighter,
   type Monster,
-  type Move,
   type Opening,
-  type Side,
+  type Suggestion,
 } from '../shared/battle'
-import { generateOpening, generateRound, type AiConfig } from './groq'
+import { generateOpening, generateRound, type AiConfig, type PlayedMove } from './groq'
 import { sign, verify } from './token'
 
 export interface HandlerResult {
@@ -30,21 +32,25 @@ export interface HandlerConfig extends Partial<AiConfig> {
 /**
  * Netlify non ha un database: lo stato della rissa viaggia firmato tra server e
  * telefono a ogni round. La firma impedisce di modificarlo (niente testo
- * arbitrario nel prompt, niente punti vita truccati).
+ * arbitrario nel prompt oltre alla mossa scritta, niente vita truccata).
  */
 interface FightToken {
-  v: 2
+  v: 3
   req: BattleRequest
-  swap: boolean
-  opening: Opening
+  opening: Pick<Opening, 'title' | 'events'>
   fs: FightState
+  /** Le mosse suggerite per il round da giocare: si può scegliere solo tra queste (o scriverne una). */
+  offers: [Suggestion[], Suggestion[]]
   /** Riassunti degli ultimi round, per dare memoria all'AI. */
   log: string[]
+  /** Le mosse suggerite nei round precedenti, perché l'AI non le riproponga. */
+  seen: string[]
   done: boolean
 }
 
 const SLOT_KEYS: Slot[] = ['character', 'weapon', 'personality', 'power']
-const LOG_SIZE = 4
+const LOG_SIZE = 5
+const SEEN_SIZE = 24
 
 function cleanName(v: unknown, fallback: string): string {
   const s = typeof v === 'string' ? v.replace(/[\u0000-\u001f<>{}"]/g, '').trim().slice(0, 20) : ''
@@ -82,20 +88,28 @@ export function parseRequest(body: unknown): { fighters: [Fighter, Fighter]; are
   return { fighters: pair, arena, req: { arena: arena.id, fighters: [ids(pair[0]), ids(pair[1])] } }
 }
 
-function parseChoices(v: unknown, t: FightToken): [number, number] | undefined {
+/** Le mosse scelte: l'indice di una suggerita o una frase scritta dal giocatore (ripulita). */
+function parseChoices(v: unknown, t: FightToken): [PlayedMove, PlayedMove] | undefined {
   if (!Array.isArray(v) || v.length !== 2) return undefined
-  const rule = eventAt(t.opening.events, t.fs.round + 1)?.rule
-  for (const [side, c] of v.entries()) {
-    const move = Number.isInteger(c) ? t.opening.moves[side][c as number] : undefined
-    if (!move || blockedReason(t.fs, side as Side, move.type, rule)) return undefined
+  const out: PlayedMove[] = []
+  for (const [side, c] of (v as Record<string, unknown>[]).entries()) {
+    if (Number.isInteger(c?.pick)) {
+      const from = t.offers[side]?.[c.pick as number]
+      if (!from) return undefined
+      out.push({ text: from.text, from })
+    } else {
+      const text = cleanCustom(c?.custom)
+      if (!text) return undefined
+      out.push({ text })
+    }
   }
-  return v as [number, number]
+  return out as [PlayedMove, PlayedMove]
 }
 
 /**
  * POST /api/battle
  * - { stage: "opening", arena, fighters } → { opening, token }
- * - { stage: "round", token, choices: [mossa0, mossa1] } → { round, next, token }
+ * - { stage: "round", token, choices: [{pick: n} | {custom: "..."}, …] } → { round, next, offers, token }
  */
 export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Promise<HandlerResult> {
   if (!cfg.apiKey) return { status: 503, body: { error: 'missing_key' } }
@@ -112,24 +126,39 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
   try {
     if (body?.stage === 'round') {
       const t = verify<FightToken>(body.token, secret)
-      const parsed = t?.v === 2 && !t.done ? parseRequest(t.req) : undefined
-      const choices = t && parsed ? parseChoices(body.choices, t) : undefined
-      if (!t || !parsed || !choices) return { status: 400, body: { error: 'bad_request' } }
+      const parsed = t?.v === 3 && !t.done ? parseRequest(t.req) : undefined
+      const moves = t && parsed ? parseChoices(body.choices, t) : undefined
+      if (!t || !parsed || !moves) return { status: 400, body: { error: 'bad_request' } }
       const event = eventAt(t.opening.events, t.fs.round + 1)
-      const texts = await generateRound(parsed.fighters, parsed.arena, t.swap, t.opening, t.fs, t.log, choices, event, ai)
-      const moves: [Move, Move] = [t.opening.moves[0][choices[0]], t.opening.moves[1][choices[1]]]
+      // L'ordine in cui l'AI vede i due combattenti si rimescola a ogni round: i modelli tendono a favorire uno dei due.
+      const seen = [...(t.seen ?? []), ...t.offers.flat().map((o) => o.text)].slice(-SEEN_SIZE)
+      const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, moves, event, ai, seen)
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
-      const { round, next } = playRound(t.fs, choices, moves, texts, names, rand, event?.rule)
-      const token = sign({ ...t, fs: next, log: [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE), done: !!round.end }, secret)
-      return { status: 200, body: { round, next, token } }
+      const actions: [string, string] = [moves[0].text, moves[1].text]
+      const custom: [boolean, boolean] = [!moves[0].from, !moves[1].from]
+      const { round, next } = playRound(t.fs, actions, custom, judgement, names, rand, event)
+      const log = [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE)
+      // Le mosse quasi uguali a quelle già viste si sostituiscono con quelle di riserva.
+      const backup: [Suggestion[], Suggestion[]] = [offlineOffers(parsed.fighters, 0, next), offlineOffers(parsed.fighters, 1, next)]
+      const offers = fixFinishers(dedupeOffers(judgement.offers, seen, backup), next)
+      const token = sign({ ...t, fs: next, offers, log, seen, done: !!round.end } satisfies FightToken, secret)
+      return { status: 200, body: { round, next, offers, token } }
     }
 
     const parsed = parseRequest(body)
     if (!parsed) return { status: 400, body: { error: 'bad_request' } }
-    const swap = rand() < 0.5
-    const opening = await generateOpening(parsed.fighters, parsed.arena, swap, scheduleEvents(rand), ai)
-    const token = sign({ v: 2, req: parsed.req, swap, opening, fs: START, log: [], done: false } satisfies FightToken, secret)
-    return { status: 200, body: { opening, token } }
+    const opening = await generateOpening(parsed.fighters, parsed.arena, rand() < 0.5, scheduleEvents(rand), ai)
+    const state: FightToken = {
+      v: 3,
+      req: parsed.req,
+      opening: { title: opening.title, events: opening.events },
+      fs: START,
+      offers: opening.offers,
+      log: [],
+      seen: [],
+      done: false,
+    }
+    return { status: 200, body: { opening, token: sign(state, secret) } }
   } catch (e) {
     console.error('[battle]', e)
     return { status: 502, body: { error: 'ai_failed' } }

@@ -1,5 +1,19 @@
 import { ARENAS, DECKS, SABOTAGE_DECKS, SLOTS, type Card, type Slot } from '../../shared/cards'
-import { START, blockedReason, eventAt, mvpOf, type BattleRequest, type FightState, type Monster, type Opening, type RoundEnd, type RoundResult, type Side } from '../../shared/battle'
+import {
+  START,
+  cleanCustom,
+  eventAt,
+  mvpOf,
+  type BattleRequest,
+  type Choice,
+  type FightState,
+  type Monster,
+  type Opening,
+  type RoundEnd,
+  type RoundResult,
+  type Side,
+  type Suggestion,
+} from '../../shared/battle'
 import { Rng } from './rng'
 
 export const REROLLS_PER_ROUND = 1
@@ -28,18 +42,20 @@ export interface Gift {
 }
 
 export interface Fight {
-  /** Presentazione e mosse: arriva mentre si guarda il VS. */
+  /** Presentazione e prime mosse: arriva mentre si guarda il VS. */
   opening: Opening | null
   /** Stato firmato dal server per il prossimo round (null = si continua col narratore di riserva). */
   token: string | null
   fs: FightState
   rounds: RoundResult[]
-  /** Mosse scelte in segreto per il round in corso (indici in opening.moves). */
-  choices: [number | null, number | null]
+  /** Le 3 mosse suggerite a ciascuno per il round in corso. */
+  offers: [Suggestion[], Suggestion[]]
+  /** Mosse scelte in segreto per il round in corso. */
+  choices: [Choice | null, Choice | null]
   end: RoundEnd | null
 }
 
-const freshFight = (): Fight => ({ opening: null, token: null, fs: START, rounds: [], choices: [null, null], end: null })
+const freshFight = (): Fight => ({ opening: null, token: null, fs: START, rounds: [], offers: [[], []], choices: [null, null], end: null })
 
 export interface RoundRecord {
   round: number
@@ -52,7 +68,7 @@ export interface RoundRecord {
 }
 
 export interface MatchState {
-  version: 4
+  version: 5
   seed: number
   bestOf: number
   players: [MatchPlayer, MatchPlayer]
@@ -90,8 +106,8 @@ export type Action =
   | { type: 'confirm' }
   | { type: 'fight' }
   | { type: 'openingReady'; opening: Opening; token: string | null }
-  | { type: 'choose'; side: Side; move: number }
-  | { type: 'roundReady'; round: RoundResult; next: FightState; token: string | null }
+  | { type: 'choose'; side: Side; choice: Choice }
+  | { type: 'roundReady'; round: RoundResult; next: FightState; offers: [Suggestion[], Suggestion[]]; token: string | null }
   | { type: 'verdict' }
   | { type: 'nextRound' }
 
@@ -181,7 +197,7 @@ function startRound(state: MatchState, round: number, first: Side): MatchState {
 
 export function createMatch(names: [string, string], bestOf: number, seed: number): MatchState {
   const blank: MatchState = {
-    version: 4,
+    version: 5,
     seed,
     bestOf,
     players: [
@@ -288,22 +304,38 @@ export function reduce(state: MatchState, action: Action): MatchState {
 
     case 'openingReady':
       if ((state.phase !== 'versus' && state.phase !== 'battle') || state.fight.opening) return state
-      return { ...state, fight: { ...state.fight, opening: action.opening, token: action.token } }
+      return { ...state, fight: { ...state.fight, opening: action.opening, offers: action.opening.offers, token: action.token } }
 
     case 'choose': {
       const f = state.fight
-      const move = f.opening?.moves[action.side][action.move]
-      if (state.phase !== 'battle' || !move || f.end || nextChooser(state) !== action.side) return state
-      if (blockedReason(f.fs, action.side, move.type, currentEvent(state)?.rule)) return state
-      const choices: [number | null, number | null] = [...f.choices]
-      choices[action.side] = action.move
+      if (state.phase !== 'battle' || !f.opening || f.end || nextChooser(state) !== action.side) return state
+      const c = action.choice
+      let choice: Choice
+      if ('pick' in c) {
+        if (!f.offers[action.side][c.pick]) return state
+        choice = { pick: c.pick }
+      } else {
+        const text = cleanCustom(c.custom)
+        if (!text) return state
+        choice = { custom: text }
+      }
+      const choices: [Choice | null, Choice | null] = [...f.choices]
+      choices[action.side] = choice
       return { ...state, fight: { ...f, choices } }
     }
 
     case 'roundReady': {
       const f = state.fight
       if (state.phase !== 'battle' || f.end || nextChooser(state) !== undefined) return state
-      const fight: Fight = { ...f, token: action.token, fs: action.next, rounds: [...f.rounds, action.round], choices: [null, null], end: action.round.end }
+      const fight: Fight = {
+        ...f,
+        token: action.token,
+        fs: action.next,
+        rounds: [...f.rounds, action.round],
+        offers: action.offers,
+        choices: [null, null],
+        end: action.round.end,
+      }
       const end = action.round.end
       if (!end) return { ...state, fight }
       const players: [MatchPlayer, MatchPlayer] = [{ ...state.players[0] }, { ...state.players[1] }]
@@ -316,7 +348,7 @@ export function reduce(state: MatchState, action: Action): MatchState {
         nicknames: opening.nicknames,
         winner: end.winner,
         title: opening.title,
-        mvp: mvpOf(fight.rounds, end.winner, opening),
+        mvp: mvpOf(fight.rounds, end.winner),
       }
       return { ...state, fight, players, history: [...state.history, record] }
     }

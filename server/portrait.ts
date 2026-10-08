@@ -32,7 +32,9 @@ export const DEFAULT_PORTRAIT_MODEL = '@cf/black-forest-labs/flux-1-schnell'
 /** Modello piccolo e veloce: deve solo tradurre due righe. */
 export const DEFAULT_TRANSLATE_MODEL = 'openai/gpt-oss-20b'
 // Le funzioni Netlify gratuite si fermano a 10 s: pochi passi di diffusione e traduzione rapida.
-const STEPS = 5
+// 4 passi: schnell è distillato per 4, oltre la qualità quasi non cambia ma ogni passo costa
+// 9,6 neurons (su ~58 a immagine): con 4 ne escono ~170 al giorno gratis, con 5 solo ~148.
+const STEPS = 4
 const IMAGE_TIMEOUT_MS = 8_000
 const TRANSLATE_TIMEOUT_MS = 3_000
 

@@ -341,6 +341,7 @@ export function battleRequest(s: MatchState): BattleRequest {
     weapon: m.weapon.id,
     personality: m.personality.id,
     power: m.power.id,
+    ...(m.stage ? { stage: m.stage } : {}),
   })
   return { arena: s.arena.id, fighters: [ids(a, s.players[0].name), ids(b, s.players[1].name)] }
 }

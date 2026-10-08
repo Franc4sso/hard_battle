@@ -67,7 +67,7 @@ export function RarityTag({ rarity, className = '' }: { rarity: Rarity; classNam
  * Un ritratto fallito si ritenta una volta a ogni nuova schermata (il server
  * non mette in cache i fallimenti, quindi è un vero secondo tentativo).
  */
-export function Portrait({ monster, size = 'md', className = '' }: { monster: Pick<Monster, 'character' | 'weapon'>; size?: 'sm' | 'md' | 'lg'; className?: string }) {
+export function Portrait({ monster, size = 'md', className = '' }: { monster: Pick<Monster, 'character' | 'weapon' | 'stage'>; size?: 'sm' | 'md' | 'lg'; className?: string }) {
   const url = portraitUrl(monster)
   const initial = () => (portraitState(monster) === 'ready' ? 'ready' : 'loading')
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>(initial)

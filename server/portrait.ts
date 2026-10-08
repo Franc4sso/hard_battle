@@ -1,3 +1,4 @@
+import type { Stage } from '../shared/battle'
 import { deckOf, findCard, type Card } from '../shared/cards'
 
 /**
@@ -92,13 +93,27 @@ export const rawSubject = (character: Card, weapon: Card): PortraitSubject => ({
 })
 
 /** `key` decide inquadratura e ambientazione di riserva: stessa coppia, stesso ritratto. */
-export function portraitPrompt(subject: PortraitSubject, key = ''): string {
+/** Come cambia il ritratto quando il mostro evolve nel bestiario. */
+const STAGE_LOOK: Record<Stage, string> = {
+  0: '',
+  1: ' EVOLVED CHAMPION FORM: the same character, now battle-hardened: a scar, a torn red champion cape, a golden belt, a glowing golden aura behind it, proud expression.',
+  2: ' LEGENDARY FINAL FORM: the same character, now a living legend: a small crown or laurel, lightning crackling around it, a majestic cape, blazing golden-white aura, the ground cracking under its feet, awe-inspiring.',
+}
+
+export function portraitPrompt(subject: PortraitSubject, key = '', stage: Stage = 0): string {
   const h = hash(key)
   const angle = ANGLES[h % ANGLES.length]
   const setting = subject.setting || SETTINGS[Math.floor(h / 7) % SETTINGS.length]
   const pose = subject.pose || 'in a dynamic fighting pose, swinging the weapon'
   const palette = subject.palette ? ` Dominant colors: ${subject.palette}.` : ''
-  return `${subject.character}, ${pose}, holding this weapon: ${subject.weapon}. The weapon must look exactly like that object. Setting: ${setting}. Camera: ${angle}.${palette} ${STYLE}`
+  return `${subject.character}, ${pose}, holding this weapon: ${subject.weapon}. The weapon must look exactly like that object.${STAGE_LOOK[stage]} Setting: ${setting}. Camera: ${angle}.${palette} ${STYLE}`
+}
+
+/** La foto del K.O.: chi ha vinto in piedi sul perdente a terra, nell'arena della rissa. */
+export function koPrompt(winner: PortraitSubject, loser: PortraitSubject, arena: Card, key = ''): string {
+  const h = hash(key)
+  const crowd = ['a cheering crowd', 'confetti falling from above', 'photographers\' flashes going off', 'a referee counting to ten'][h % 4]
+  return `KNOCKOUT MOMENT. Winner: ${winner.character}, standing triumphant with one foot on the loser, holding ${winner.weapon} raised high. Loser: ${loser.character}, lying knocked out on the ground, eyes as spirals, little stars circling the head, ${loser.weapon} dropped nearby. Setting: ${arena.name}, ${arena.desc}. ${crowd}, dramatic low angle. ${STYLE}`
 }
 
 const TRANSLATE_SYSTEM =
@@ -146,7 +161,8 @@ export async function translateSubject(cfg: PortraitConfig, character: Card, wea
   }
 }
 
-export const portraitKey = (character: Card, weapon: Card) => `${character.id}__${weapon.id}.jpg`
+export const portraitKey = (character: Card, weapon: Card, stage: Stage = 0) => `${character.id}__${weapon.id}${stage ? `__s${stage}` : ''}.jpg`
+export const koKey = (w: { character: Card; weapon: Card }, l: { character: Card; weapon: Card }, arena: Card) => `ko__${w.character.id}__${w.weapon.id}__${l.character.id}__${l.weapon.id}__${arena.id}.jpg`
 
 /** Le due carte della richiesta, solo se esistono e sono del mazzo giusto. */
 export function parsePortraitIds(characterId: unknown, weaponId: unknown): { character: Card; weapon: Card } | undefined {
@@ -180,24 +196,48 @@ export async function generatePortrait(cfg: PortraitConfig, prompt: string): Pro
 const IMAGE_HEADERS = { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=31536000, immutable' }
 const NO_CACHE = { 'cache-control': 'no-store' }
 
-/**
- * GET /api/portrait/:character/:weapon → JPEG.
- * 404 id sconosciuti, 503 chiave mancante, 502 generazione fallita (il telefono mostra la scheda senza ritratto).
- */
-export async function handlePortraitRequest(characterId: unknown, weaponId: unknown, cfg: PortraitConfig, store: PortraitStore): Promise<PortraitResult> {
-  const ids = parsePortraitIds(characterId, weaponId)
-  if (!ids) return { status: 404, body: { error: 'unknown_card' }, headers: NO_CACHE }
-  const key = portraitKey(ids.character, ids.weapon)
+/** Genera, mette in cache e risponde; i tre errori sono gli stessi per ritratti e foto del K.O. */
+async function serveImage(key: string, cfg: PortraitConfig, store: PortraitStore, prompt: () => Promise<string>): Promise<PortraitResult> {
   const cached = await store.get(key).catch(() => null)
   if (cached) return { status: 200, body: cached, headers: IMAGE_HEADERS }
   if (!cfg.accountId || !cfg.token) return { status: 503, body: { error: 'missing_key' }, headers: NO_CACHE }
-  const subject = (await translateSubject(cfg, ids.character, ids.weapon)) ?? rawSubject(ids.character, ids.weapon)
-  const image = await generatePortrait(cfg, portraitPrompt(subject, key))
+  const image = await generatePortrait(cfg, await prompt())
   if (!image) return { status: 502, body: { error: 'generation_failed' }, headers: NO_CACHE }
   await store.set(key, image).catch(() => {
     // Senza cache si rigenera la prossima volta: costa una chiamata, non la partita.
   })
   return { status: 200, body: image, headers: IMAGE_HEADERS }
+}
+
+/**
+ * GET /api/portrait/:character/:weapon?stage=1 → JPEG.
+ * 404 id sconosciuti, 503 chiave mancante, 502 generazione fallita (il telefono mostra la scheda senza ritratto).
+ */
+export async function handlePortraitRequest(characterId: unknown, weaponId: unknown, cfg: PortraitConfig, store: PortraitStore, stage: Stage = 0): Promise<PortraitResult> {
+  const ids = parsePortraitIds(characterId, weaponId)
+  if (!ids) return { status: 404, body: { error: 'unknown_card' }, headers: NO_CACHE }
+  const key = portraitKey(ids.character, ids.weapon, stage)
+  return serveImage(key, cfg, store, async () => {
+    const subject = (await translateSubject(cfg, ids.character, ids.weapon)) ?? rawSubject(ids.character, ids.weapon)
+    return portraitPrompt(subject, key, stage)
+  })
+}
+
+/**
+ * GET /api/ko/:winnerCharacter/:winnerWeapon/:loserCharacter/:loserWeapon/:arena → JPEG della foto del K.O.
+ * Solo id di carte: niente testo libero, e la stessa rissa dà sempre la stessa foto.
+ */
+export async function handleKoRequest(ids: unknown[], cfg: PortraitConfig, store: PortraitStore): Promise<PortraitResult> {
+  const w = parsePortraitIds(ids[0], ids[1])
+  const l = parsePortraitIds(ids[2], ids[3])
+  const arena = findCard(ids[4])
+  if (!w || !l || !arena || deckOf(arena.id) !== 'arena') return { status: 404, body: { error: 'unknown_card' }, headers: NO_CACHE }
+  const key = koKey(w, l, arena)
+  return serveImage(key, cfg, store, async () => {
+    // Le due traduzioni insieme: il tempo è quello di una sola.
+    const [ws, ls] = await Promise.all([translateSubject(cfg, w.character, w.weapon), translateSubject(cfg, l.character, l.weapon)])
+    return koPrompt(ws ?? rawSubject(w.character, w.weapon), ls ?? rawSubject(l.character, l.weapon), arena, key)
+  })
 }
 
 /** Cache in memoria, per i test e come riserva. */

@@ -1,6 +1,7 @@
 import { deckOf, findCard, type Card, type Slot } from '../shared/cards'
 import {
   START,
+  cleanStage,
   eventAt,
   movePower,
   playRound,
@@ -75,7 +76,8 @@ export function parseRequest(body: unknown): { fighters: [Fighter, Fighter]; are
       if (!card) return undefined
       monster[slot] = card
     }
-    fighters.push({ player: cleanName(f.player, `Giocatore ${i + 1}`), monster: monster as Monster })
+    const stage = cleanStage(f?.stage)
+    fighters.push({ player: cleanName(f.player, `Giocatore ${i + 1}`), monster: { ...(monster as Monster), ...(stage ? { stage } : {}) } })
   }
   const pair = fighters as [Fighter, Fighter]
   const ids = (f: Fighter) => ({
@@ -84,6 +86,7 @@ export function parseRequest(body: unknown): { fighters: [Fighter, Fighter]; are
     weapon: f.monster.weapon.id,
     personality: f.monster.personality.id,
     power: f.monster.power.id,
+    ...(f.monster.stage ? { stage: f.monster.stage } : {}),
   })
   return { fighters: pair, arena, req: { arena: arena.id, fighters: [ids(pair[0]), ids(pair[1])] } }
 }
@@ -94,7 +97,8 @@ export const hasDirtyCard = (fighters: [Fighter, Fighter]) => fighters.some((f) 
 /**
  * POST /api/battle
  * - { stage: "opening", arena, fighters } → { opening, token }
- * - { stage: "round", token } → { round, next, token }
+ * - { stage: "round", token, evolving?: [bool, bool] } → { round, next, token }
+ *   (evolving: chi, vincendo questa rissa, evolve nel bestiario: l'AI gli inventa il soprannome).
  */
 export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Promise<HandlerResult> {
   if (!cfg.apiKey) return { status: 503, body: { error: 'missing_key' } }
@@ -116,7 +120,9 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const event = eventAt(t.opening.events, t.fs.round + 1)
       const ai = { ...base, dirty: hasDirtyCard(parsed.fighters) }
       // L'ordine in cui l'AI vede i due combattenti si rimescola a ogni round: i modelli tendono a favorire uno dei due.
-      const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, event, ai, t.lastTwist, t.used, t.lastSources ?? undefined)
+      const ev = Array.isArray(body.evolving) ? body.evolving : []
+      const evolving: [boolean, boolean] = [ev[0] === true, ev[1] === true]
+      const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, event, ai, t.lastTwist, t.used, t.lastSources ?? undefined, evolving)
       const [m0, m1] = judgement.moves
       const moves: Moves = { names: [m0.name, m1.name], actions: [m0.text, m1.text] }
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]

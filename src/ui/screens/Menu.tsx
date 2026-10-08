@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { DeckMode } from '../../../shared/cards'
-import { loadBestiary, removeEntry } from '../../game/bestiary'
+import { STAGE_LABEL, championMonster, displayName, entryStage, isSfigato, loadBestiary, removeEntry, winsToNextStage } from '../../game/bestiary'
 import { Button, Footer, Portrait, anim } from '../components'
 
 const STEPS: [string, string][] = [
@@ -81,19 +81,45 @@ export function BestiaryScreen({ onBack }: { onBack(): void }) {
           <ul className="flex flex-col gap-3">
             {shown.map((e, i) => (
               <li key={e.key} className="panel a-rise flex flex-col gap-1" style={anim(Math.min(i, 8) * 0.05, i % 2 ? 0.6 : -0.6)}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <Portrait monster={e.monster} size="sm" />
-                    <b className="comic text-[26px] leading-none">{e.nickname}</b>
+                <div className="flex items-start gap-3">
+                  <Portrait monster={championMonster(e)} size="md" className={entryStage(e) ? 'rar-frame-leggendaria' : ''} />
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <b className="comic text-[24px] leading-none">{displayName(e)}</b>
+                      <span
+                        className="rar shrink-0"
+                        style={{ background: isSfigato(e) ? '#5D5866' : entryStage(e) === 2 ? '#FFB020' : entryStage(e) === 1 ? '#9B4DFF' : '#eee', color: entryStage(e) === 2 || entryStage(e) === 0 ? '#16141a' : '#fff' }}
+                      >
+                        {isSfigato(e) ? 'Sfigato' : STAGE_LABEL[entryStage(e)]}
+                      </span>
+                    </div>
+                    <span className="label text-mute">
+                      {e.monster.character.name} · di {e.owner} · {e.wins} V {e.losses} S
+                    </span>
+                    {winsToNextStage(e.wins) > 0 && (
+                      <>
+                        <div className="xp">
+                          <div style={{ width: `${(100 * (e.wins - (entryStage(e) === 1 ? 3 : 0))) / (entryStage(e) === 1 ? 3 : 3)}%` }} />
+                        </div>
+                        <span className="text-[11px] font-bold text-mute">
+                          {winsToNextStage(e.wins) === 1 ? 'Evolve alla prossima vittoria' : `${entryStage(e) === 1 ? 'Leggenda' : 'Evoluzione'} tra ${winsToNextStage(e.wins)} vittorie`}
+                        </span>
+                      </>
+                    )}
                   </div>
-                  <span className="pill shrink-0 text-xs" style={{ background: e.wins > e.losses ? '#FFE14D' : '#fff' }}>
-                    {e.wins} V · {e.losses} S
-                  </span>
                 </div>
-                <span className="label text-mute">di {e.owner}</span>
-                <span className="text-[13px] leading-snug font-medium">
-                  <b>{e.monster.character.name}</b> · {e.monster.weapon.name} · {e.monster.personality.name} · {e.monster.power.name}
+                <span className="text-[12.5px] leading-snug font-medium">
+                  {e.monster.weapon.name} · {e.monster.personality.name} · {e.monster.power.name}
                 </span>
+                {!!e.scars?.length && (
+                  <ul className="flex flex-col gap-0.5 text-[12px] leading-snug">
+                    {e.scars.map((s) => (
+                      <li key={s}>
+                        <span className="text-red">✦</span> {s}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {e.lastTitle && <span className="text-xs font-bold italic">Ultima rissa: {e.lastTitle}</span>}
                 {confirm === e.key ? (
                   <div className="mt-1 flex gap-2">

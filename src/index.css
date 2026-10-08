@@ -243,6 +243,30 @@ body {
     border-radius: 10px;
     font-size: 0;
   }
+  /* La foto del K.O., come una polaroid appoggiata storta. */
+  .polaroid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #fff;
+    border: 3px solid var(--color-ink);
+    box-shadow: 6px 6px 0 var(--color-ink);
+    padding: 10px 10px 14px;
+    transform: rotate(var(--rot, -2deg));
+  }
+  /* Vittorie verso la prossima evoluzione. */
+  .xp {
+    height: 10px;
+    border: 2px solid var(--color-ink);
+    border-radius: 999px;
+    background: #fff;
+    overflow: hidden;
+  }
+  .xp > div {
+    height: 100%;
+    background: var(--color-mint);
+    transition: width 0.4s ease;
+  }
   /* Nome e giocatore sopra il ritratto grande, in basso, su una sfumatura scura. */
   .portrait-caption {
     position: absolute;

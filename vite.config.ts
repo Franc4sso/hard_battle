@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -68,20 +69,19 @@ function devPortraitApi(mode: string): Plugin {
           await fs.writeFile(path.join(dir, key), data)
         },
       }
-      server.middlewares.use('/api/portrait', async (req, res) => {
-        const [character, weapon] = (req.url ?? '').split('?')[0].split('/').filter(Boolean)
+      /** /api/portrait/:c/:w?stage=1 e /api/ko/:wc/:ww/:lc/:lw/:arena, con lo stesso codice delle Netlify Functions. */
+      const serve = (kind: 'portrait' | 'ko') => async (req: IncomingMessage, res: ServerResponse) => {
+        const [path, query = ''] = (req.url ?? '').split('?')
+        const ids = path.split('/').filter(Boolean)
         let out: { status: number; body: Uint8Array | object; headers: Record<string, string> } = { status: 500, body: { error: 'dev_server' }, headers: {} }
         try {
           const env = loadEnv(mode, server.config.root, '')
-          const { handlePortraitRequest } = await server.ssrLoadModule('/server/portrait.ts')
-          out = await handlePortraitRequest(
-            character,
-            weapon,
-            { accountId: env.CF_ACCOUNT_ID, token: env.CF_API_TOKEN, model: env.CF_IMAGE_MODEL, groqKey: env.GROQ_API_KEY, groqModel: env.PORTRAIT_TRANSLATE_MODEL },
-            store,
-          )
+          const cfg = { accountId: env.CF_ACCOUNT_ID, token: env.CF_API_TOKEN, model: env.CF_IMAGE_MODEL, groqKey: env.GROQ_API_KEY, groqModel: env.PORTRAIT_TRANSLATE_MODEL }
+          const mod = await server.ssrLoadModule('/server/portrait.ts')
+          const stage = Number(new URLSearchParams(query).get('stage')) || 0
+          out = kind === 'ko' ? await mod.handleKoRequest(ids, cfg, store) : await mod.handlePortraitRequest(ids[0], ids[1], cfg, store, stage === 1 || stage === 2 ? stage : 0)
         } catch (e) {
-          console.error('[dev-portrait-api]', e)
+          console.error(`[dev-${kind}-api]`, e)
         }
         res.statusCode = out.status
         for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v)
@@ -90,7 +90,9 @@ function devPortraitApi(mode: string): Plugin {
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify(out.body))
         }
-      })
+      }
+      server.middlewares.use('/api/portrait', serve('portrait'))
+      server.middlewares.use('/api/ko', serve('ko'))
     },
   }
 }

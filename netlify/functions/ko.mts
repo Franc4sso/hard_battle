@@ -1,16 +1,14 @@
 import { getStore } from '@netlify/blobs'
-import { cleanStage } from '../../shared/battle'
-import { handlePortraitRequest, type PortraitStore } from '../../server/portrait'
+import { handleKoRequest, type PortraitStore } from '../../server/portrait'
 
 /** Copia i byte in un ArrayBuffer tutto suo: Blobs e Response non accettano una vista. */
 const toArrayBuffer = (u: Uint8Array): ArrayBuffer => u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer
 
-/** Quello che serve del contesto Netlify: i parametri del percorso. */
 interface Context {
   params: Record<string, string>
 }
 
-/** I ritratti restano per sempre su Netlify Blobs: una coppia personaggio + arma si genera una volta sola. */
+/** Le foto del K.O. stanno nello stesso store dei ritratti. */
 function blobStore(): PortraitStore {
   const store = getStore('portraits')
   return {
@@ -26,10 +24,9 @@ function blobStore(): PortraitStore {
 
 export default async (req: Request, context: Context): Promise<Response> => {
   if (req.method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-  const stage = cleanStage(Number(new URL(req.url).searchParams.get('stage')))
-  const out = await handlePortraitRequest(
-    context.params.character,
-    context.params.weapon,
+  const p = context.params
+  const out = await handleKoRequest(
+    [p.wc, p.ww, p.lc, p.lw, p.arena],
     {
       accountId: process.env.CF_ACCOUNT_ID,
       token: process.env.CF_API_TOKEN,
@@ -38,10 +35,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
       groqModel: process.env.PORTRAIT_TRANSLATE_MODEL,
     },
     blobStore(),
-    stage,
   )
   const body = out.body instanceof Uint8Array ? toArrayBuffer(out.body) : JSON.stringify(out.body)
   return new Response(body, { status: out.status, headers: out.headers })
 }
 
-export const config = { path: '/api/portrait/:character/:weapon' }
+export const config = { path: '/api/ko/:wc/:ww/:lc/:lw/:arena' }

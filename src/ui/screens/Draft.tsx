@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { SLOTS, type Card } from '../../../shared/cards'
 import type { Monster } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
-import { championsOf, loadBestiary } from '../../game/bestiary'
+import { championMonster, championsOf, displayName, loadBestiary } from '../../game/bestiary'
 import { currentSlot, currentTurn, draftSlots, other, type Action, type MatchState } from '../../game/match'
 import { preloadPortrait } from '../../game/portraits'
 import { Button, Footer, Icon, LETTER_COLORS, Portrait, RarityTag, SLOT_INFO, Sheet, anim } from '../components'
@@ -132,10 +132,10 @@ function ChampionSheet({ state, dispatch, onClose }: ScreenProps & { onClose(): 
             className="choice flex-col items-start gap-1 p-3"
             onClick={() => {
               play('pick')
-              dispatch({ type: 'useChampion', monster: e.monster })
+              dispatch({ type: 'useChampion', monster: championMonster(e) })
             }}
           >
-            <b className="comic text-[22px] leading-none">{e.nickname}</b>
+            <b className="comic text-[22px] leading-none">{displayName(e)}</b>
             <span className="text-[13px] font-medium">
               {e.monster.character.name} · {e.monster.weapon.name} · {e.monster.power.name}
             </span>

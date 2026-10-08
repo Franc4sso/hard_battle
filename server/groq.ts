@@ -6,7 +6,9 @@ import {
   hpState,
   normalizeJudgement,
   normalizeOpening,
+  offlineEvoName,
   offlineMove,
+  offlineScars,
   sideOf,
   type AiRound,
   type ArenaEvent,
@@ -104,6 +106,8 @@ export function roundPrompt(
   used: string[] = [],
   /** La carta usata da ciascuno nel round prima: stavolta un'altra. */
   lastSources?: [MoveSource, MoveSource],
+  /** Chi, vincendo la rissa, evolve nel bestiario: gli serve un soprannome nuovo. */
+  evolving: [boolean, boolean] = [false, false],
 ): string {
   const names: [string, string] = [f[0].monster.character.name, f[1].monster.character.name]
   const SOURCE_NAME: Record<MoveSource, string> = { character: 'il personaggio', weapon: 'l’arma', personality: 'la personalità', power: 'il superpotere' }
@@ -137,7 +141,15 @@ Il tuo compito, da regista, giudice e narratore. PRIMA inventa la mossa di ciasc
 - "sfx": l'onomatopea più forte del round, in maiuscolo, max 14 caratteri.
 - "ko": due frasi finali spettacolari legate a questo round: la prima da usare SE crolla il combattente 0, la seconda SE crolla l'1.
 - "summary": 1 frase che ricordi il round nei prossimi, con i nomi delle due mosse.
-Forma: {"moves":[{"name":"...","text":"...","source":"weapon"},{"name":"...","text":"...","source":"power"}],"twist":null,"scene":"...","hits":[1,2],"recover":[0,0],"winner":0,"why":"...","stamps":["FURBA","MAH"],"sfx":"...","ko":["...","..."],"summary":"..."}`
+- "scars": due frasi, nell'ordine 0 e 1: la CICATRICE che quel combattente si porta nel bestiario SE vince la rissa con questo round. Un ricordo preciso e buffo del momento decisivo, max 14 parole, al passato, senza soggetto (es. "Ha mangiato una baguette intera sul cadavere del Kraken").${
+    evolving[0] || evolving[1]
+      ? `\n- "evoNames": ${([0, 1] as const)
+          .filter((i) => evolving[i])
+          .map((i) => `${names[i]} (COMBATTENTE ${i}) con questa vittoria EVOLVE: inventagli un soprannome da campione, epico e ridicolo, max 4 parole (es. "Il Doge delle Focacce")`)
+          .join('; ')}. Per l'altro null.`
+      : ''
+  }
+Forma: {"moves":[{"name":"...","text":"...","source":"weapon"},{"name":"...","text":"...","source":"power"}],"twist":null,"scene":"...","hits":[1,2],"recover":[0,0],"winner":0,"why":"...","stamps":["FURBA","MAH"],"sfx":"...","ko":["...","..."],"summary":"...","scars":["...","..."]${evolving[0] || evolving[1] ? ',"evoNames":[null,"..."]' : ''}}`
 }
 
 class RateLimitError extends Error {
@@ -266,17 +278,22 @@ export function generateRound(
   lastTwist = false,
   used: string[] = [],
   lastSources?: [MoveSource, MoveSource],
+  evolving: [boolean, boolean] = [false, false],
 ): Promise<AiRound> {
   // Tutto ciò che è a coppie va girato come lo vede l'AI.
   const seenFs: FightState = { ...fs, hp: ordered(fs.hp, swap) }
   const roundNo = fs.round + 1
   return retry(async () => {
-    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, opening, seenFs, log, event, lastTwist, used, lastSources && ordered(lastSources, swap)), cfg)
+    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, opening, seenFs, log, event, lastTwist, used, lastSources && ordered(lastSources, swap), ordered(evolving, swap)), cfg)
     if (swap) {
-      flipPairs(raw, ['moves', 'hits', 'recover', 'stamps', 'ko'])
+      flipPairs(raw, ['moves', 'hits', 'recover', 'stamps', 'ko', 'scars', 'evoNames'])
       const w = sideOf(raw.winner)
       raw.winner = w === null ? null : 1 - w
     }
-    return normalizeJudgement(raw, [offlineMove(fighters, 0, roundNo), offlineMove(fighters, 1, roundNo)])
+    const j = normalizeJudgement(raw, [offlineMove(fighters, 0, roundNo), offlineMove(fighters, 1, roundNo)], offlineScars(fighters, roundNo))
+    if (!j) return null
+    // Il soprannome da evoluto serve solo a chi evolve; se l'AI non l'ha scritto, quello di riserva.
+    const evoNames = [0, 1].map((i) => (evolving[i] ? j.evoNames[i] || offlineEvoName(fighters[i], 1) : null)) as [string | null, string | null]
+    return { ...j, evoNames }
   })
 }

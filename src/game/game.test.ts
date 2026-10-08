@@ -16,6 +16,7 @@ import {
   offlineOpening,
   playRound,
   scheduleEvents,
+  stageOf,
   type FightState,
   type Fighter,
   type Judgement,
@@ -25,9 +26,10 @@ import {
 } from '../../shared/battle'
 import { generateOpening, generateRound, roundPrompt } from '../../server/groq'
 import { handleBattleRequest, hasDirtyCard, parseRequest } from '../../server/handler'
-import { handlePortraitRequest, memoryStore, portraitPrompt, rawSubject } from '../../server/portrait'
+import { handleKoRequest, handlePortraitRequest, memoryStore, portraitKey, portraitPrompt, rawSubject } from '../../server/portrait'
 import { sign, verify } from '../../server/token'
-import { withBattle } from './bestiary'
+import { championMonster, displayName, entryStage, evolvingSides, isSfigato, winsToNextStage, withBattle } from './bestiary'
+import { RARITY_LEVEL } from '../../shared/rarity'
 import { battleRequest, createMatch, currentSlot, draftSlots, reduce, type MatchState } from './match'
 
 function monster(i = 0): Monster {
@@ -53,6 +55,8 @@ const judge = (over: Partial<Judgement> = {}): Judgement => ({
   ko: ['A crolla', 'B crolla'],
   summary: 's',
   twist: null,
+  scars: ['cicatrice A', 'cicatrice B'],
+  evoNames: [null, null],
   ...over,
 })
 const MOVES: Moves = { names: ['Mossa A', 'Mossa B'], actions: ['a', 'b'] }
@@ -361,8 +365,14 @@ describe('rissa e partita', () => {
     expect(s.fight.rounds).toHaveLength(0)
   })
 
-  it('manda al server solo id', () => {
-    expect(parseRequest(battleRequest(draftRound(createMatch(['Giulia', 'Marco'], 1, 1))))?.fighters[0].player).toBe('Giulia')
+  it('manda al server solo id, e lo stadio del campione tornato dal bestiario', () => {
+    const s = draftRound(createMatch(['Giulia', 'Marco'], 1, 1))
+    expect(parseRequest(battleRequest(s))?.fighters[0].player).toBe('Giulia')
+    const evolved = { ...s, monsters: [{ ...s.monsters[0]!, stage: 2 as const }, s.monsters[1]] as [Monster, Monster] }
+    expect(battleRequest(evolved).fighters[0].stage).toBe(2)
+    expect(parseRequest(battleRequest(evolved))?.fighters[0].monster.stage).toBe(2)
+    // Uno stadio inventato non passa.
+    expect(parseRequest({ ...battleRequest(evolved), fighters: [{ ...battleRequest(evolved).fighters[0], stage: 7 }, battleRequest(evolved).fighters[1]] })?.fighters[0].monster.stage).toBeUndefined()
   })
 })
 
@@ -503,10 +513,20 @@ describe('server', () => {
     const roundCfg = { ...cfg, fetch: groqAnswer(roundAnswer({ twist: 'Il koala crolla dal sonno' })) }
     const round = async (token: string) => {
       const r = await handleBattleRequest(JSON.stringify({ stage: 'round', token }), roundCfg)
-      return { status: r.status, body: r.body as { token: string; round: { hp: number[]; moveNames: string[]; actions: string[]; twist: string | null } } }
+      return { status: r.status, body: r.body as { token: string; round: { hp: number[]; moveNames: string[]; actions: string[]; twist: string | null; scars: string[]; evoNames: unknown[] } } }
     }
     const r1 = await round(open.token)
     expect(r1.status).toBe(200)
+    // Le cicatrici dell'AI mancano: arrivano quelle di riserva. Nessuno evolve: niente soprannomi.
+    expect(r1.body.round.scars[0]).toMatch(/Ha steso/)
+    expect(r1.body.round.evoNames).toEqual([null, null])
+    expect(lastSent.messages[1].content).not.toContain('evoNames')
+    // Se Giulia evolve vincendo, l'AI deve inventarle il soprannome; se non lo fa, quello di riserva.
+    const ev = await handleBattleRequest(JSON.stringify({ stage: 'round', token: open.token, evolving: [true, false] }), { ...roundCfg, fetch: groqAnswer(roundAnswer({ evoNames: ['La Furia di Giulia', null] })) })
+    expect((ev.body as { round: { evoNames: unknown } }).round.evoNames).toEqual(['La Furia di Giulia', null])
+    expect(lastSent.messages[1].content).toContain('EVOLVE: inventagli un soprannome')
+    const ev2 = await handleBattleRequest(JSON.stringify({ stage: 'round', token: open.token, evolving: [false, true] }), roundCfg)
+    expect((ev2.body as { round: { evoNames: [null, string] } }).round.evoNames[1]).toMatch(/il Terribile/)
     // rand 0.9 = ordine non invertito: le mosse arrivano come le ha scritte l'AI.
     expect(r1.body.round.moveNames).toEqual(['Mossa Zero', 'Mossa Uno'])
     expect(r1.body.round.actions).toEqual(['fa zero', 'fa uno'])
@@ -661,5 +681,69 @@ describe('bestiario', () => {
     expect(list.find((e) => e.owner === 'Giulia')!.wins).toBe(2)
     expect(list.find((e) => e.owner === 'Marco')!.losses).toBe(2)
     expect(list[0].nickname).toBe('La Furia')
+  })
+
+  it('cicatrici a chi vince, sfigato a chi perde tre volte di fila, evoluzione alla terza vittoria', () => {
+    const s = draftRound(createMatch(['Giulia', 'Marco'], 3, 11))
+    const win = (scar: string, evoName: string | null = null) => ({ winner: 0 as const, nicknames: ['La Furia', 'Il Mite'] as [string, string], title: 'T', scar, evoName })
+    let list = withBattle([], s, win('Ha steso il Mite al primo colpo'), 1)
+    list = withBattle(list, s, win('Gli ha rubato la merenda'), 2)
+    let g = list.find((e) => e.owner === 'Giulia')!
+    let m = list.find((e) => e.owner === 'Marco')!
+    expect(g.scars).toEqual(['Gli ha rubato la merenda', 'Ha steso il Mite al primo colpo'])
+    expect(entryStage(g)).toBe(0)
+    expect(winsToNextStage(g.wins)).toBe(1)
+    expect(evolvingSides(list, s)).toEqual([true, false])
+    expect(isSfigato(m)).toBe(false)
+    // Terza vittoria: evolve e tiene il soprannome nuovo; Marco, alla terza sconfitta di fila, è lo Sfigato.
+    list = withBattle(list, s, win('Ha fatto piangere il Mite', 'Il Doge delle Focacce'), 3)
+    g = list.find((e) => e.owner === 'Giulia')!
+    m = list.find((e) => e.owner === 'Marco')!
+    expect(entryStage(g)).toBe(1)
+    expect(g.evoName).toBe('Il Doge delle Focacce')
+    expect(displayName(g)).toBe('Il Doge delle Focacce')
+    expect(championMonster(g).stage).toBe(1)
+    expect(isSfigato(m)).toBe(true)
+    expect(displayName(m)).toBe('Il Mite lo Sfigato')
+    expect(m.scars?.[0]).toMatch(/Perso 3 risse di fila/)
+    // Lo sfigato si riscatta con una vittoria; il soprannome da evoluto resta anche se l'AI non ne manda uno nuovo.
+    list = withBattle(list, s, { winner: 1, nicknames: ['La Furia', 'Il Mite'], title: 'T', scar: 'Riscatto' }, 4)
+    m = list.find((e) => e.owner === 'Marco')!
+    g = list.find((e) => e.owner === 'Giulia')!
+    expect(isSfigato(m)).toBe(false)
+    expect(m.lossStreak).toBe(0)
+    expect(g.evoName).toBe('Il Doge delle Focacce')
+    // Il mostro salvato non porta lo stadio dentro le carte: si ricava dalle vittorie.
+    expect(g.monster.stage).toBeUndefined()
+    expect(stageOf(6)).toBe(2)
+    expect(movePower({ ...monster(0), stage: 1 }, 'character')).toBe(RARITY_LEVEL[monster(0).character.rarity] + 1)
+  })
+})
+
+describe('foto del K.O.', () => {
+  const cfg = { accountId: 'acc', token: 'tok' }
+  const png = Buffer.from('ko').toString('base64')
+  it('accetta solo cinque id validi e disegna vincitore in piedi e perdente a terra', async () => {
+    const prompts: string[] = []
+    const fetch = (async (_url: string, init: RequestInit) => {
+      prompts.push(JSON.parse(init.body as string).prompt)
+      return new Response(JSON.stringify({ result: { image: png } }), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+    const store = memoryStore()
+    const ids = [DECKS.character[0].id, DECKS.weapon[0].id, DECKS.character[1].id, DECKS.weapon[1].id, ARENAS[0].id]
+    expect((await handleKoRequest([...ids.slice(0, 4), 'a-nope'], { ...cfg, fetch }, store)).status).toBe(404)
+    expect((await handleKoRequest([ids[0], ids[1], ids[2], ids[2], ids[4]], { ...cfg, fetch }, store)).status).toBe(404)
+    const r = await handleKoRequest(ids, { ...cfg, fetch }, store)
+    expect(r.status).toBe(200)
+    expect(prompts[0]).toContain('KNOCKOUT MOMENT')
+    expect(prompts[0]).toContain(DECKS.character[0].name)
+    expect(prompts[0]).toContain(ARENAS[0].name)
+    // Dalla cache la seconda volta.
+    await handleKoRequest(ids, { ...cfg, fetch }, store)
+    expect(prompts).toHaveLength(1)
+    // Il ritratto evoluto ha una chiave e un prompt diversi.
+    await handlePortraitRequest(ids[0], ids[1], { ...cfg, fetch }, store, 1)
+    expect(prompts[1]).toContain('EVOLVED CHAMPION FORM')
+    expect(portraitKey(DECKS.character[0], DECKS.weapon[0], 1)).toContain('__s1')
   })
 })

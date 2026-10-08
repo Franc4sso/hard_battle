@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { GOOD_STAMPS, HIT_LABEL, MAX_HP, hpState, mvpOf, type Monster, type RoundResult, type Side, type Stamp } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
+import { STAGE_LABEL, entryFor, entryStage, loadBestiary, winsToNextStage } from '../../game/bestiary'
 import { matchWinner, other, type MatchState } from '../../game/match'
+import { koUrl, portraitUrl, preload, preloadPortrait } from '../../game/portraits'
+import { renderShareCard, shareCard } from '../../game/share'
 import type { Rarity } from '../../../shared/rarity'
 import { Button, Footer, HpBar, PLAYER_COLORS, PLAYER_TEXT, Portrait, RarityTag, anim } from '../components'
 import type { ScreenProps } from './Draft'
@@ -334,6 +337,8 @@ export function BattleScreen(props: ScreenProps) {
     const r = rounds[count - 1]
     play(r.end ? 'ko' : r.hits.some((h) => h === 3) ? 'power' : r.hits.some((h) => h > 0) ? 'hit' : 'twist')
     vibrate(r.end ? [80, 50, 160] : 50)
+    // La foto del K.O. si sviluppa mentre si legge l'ultimo round.
+    if (r.end) preload(koUrl(state.monsters[r.end.winner] as Monster, state.monsters[other(r.end.winner)] as Monster, state.arena))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [count])
 
@@ -406,20 +411,66 @@ export function BattleScreen(props: ScreenProps) {
   )
 }
 
+/** La foto del K.O.: una polaroid storta che arriva mentre si legge il verdetto. Se non arriva, non c'è. */
+function KoPhoto({ url, caption }: { url: string; caption: string }) {
+  const [st, setSt] = useState<'loading' | 'ready' | 'failed'>('loading')
+  if (st === 'failed') return null
+  return (
+    <div className="polaroid a-pop" style={anim(0.3, -2)}>
+      <div className="relative aspect-square w-full overflow-hidden border-2 border-ink bg-[repeating-linear-gradient(45deg,#f3f0f8_0_8px,#e6e2ef_8px_16px)]">
+        <img src={url} alt="La foto del K.O." decoding="async" className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${st === 'ready' ? 'opacity-100' : 'opacity-0'}`} onLoad={() => setSt('ready')} onError={() => setSt('failed')} />
+        {st === 'loading' && <span className="comic absolute inset-0 grid place-items-center text-center text-[18px] leading-tight text-mute">IL FOTOGRAFO<br />STA SVILUPPANDO…</span>}
+      </div>
+      <b className="comic text-center text-[24px] leading-none">LA FOTO DEL K.O.</b>
+      <span className="text-center text-[12.5px] leading-snug font-medium">{caption}</span>
+    </div>
+  )
+}
+
 export function VerdictScreen({ state, dispatch }: ScreenProps) {
   const { opening, rounds, end } = state.fight
   const w = end!.winner
+  const l = other(w)
   const over = matchWinner(state) !== undefined
   const mvp = mvpOf(rounds, w)
+  const last = rounds[rounds.length - 1]
+  const winner = state.monsters[w] as Monster
+  const loser = state.monsters[l] as Monster
+  // Il bestiario è già aggiornato: se il vincitore ha appena evoluto, lo si celebra qui.
+  const entry = entryFor(loadBestiary(), state, w)
+  const stageNow = entry ? entryStage(entry) : 0
+  const evolved = !!last.evoNames[w] && stageNow > (winner.stage ?? 0)
+  const evoMonster: Monster = { ...winner, stage: stageNow }
+  const [sharing, setSharing] = useState<'idle' | 'busy' | 'shared' | 'downloaded' | 'failed'>('idle')
+  const ko = koUrl(winner, loser, state.arena)
   useEffect(() => {
     play('win')
     vibrate([60, 40, 60, 40, 120])
+    if (evolved) preloadPortrait(evoMonster)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const share = async () => {
+    setSharing('busy')
+    const blob = await renderShareCard({
+      title: opening!.title,
+      arena: state.arena.name,
+      names: [characterOf(state, 0), characterOf(state, 1)],
+      players: [state.players[0].name, state.players[1].name],
+      winner: w,
+      portraits: [portraitUrl(state.monsters[0] as Monster), portraitUrl(state.monsters[1] as Monster)],
+      koPhoto: ko,
+      mvp,
+      rounds: rounds.length,
+      byJury: end!.byJury,
+    })
+    setSharing(blob ? await shareCard(blob, opening!.title) : 'failed')
+  }
+
   return (
     <div className="screen">
       <div className="mt-2 flex flex-col items-center gap-2 text-center">
-        <Portrait monster={state.monsters[w] as Monster} size="lg" className="a-pop max-w-[300px]" />
-        <span className="pill a-pop">{opening!.nicknames[w].toUpperCase()}</span>
+        <span className="pill a-pop">{(evolved ? last.evoNames[w] : opening!.nicknames[w])!.toUpperCase()}</span>
         <h1 className="title-comic a-slam text-[60px]" style={anim(0.15, -3)}>
           VINCE
           <br />
@@ -431,30 +482,55 @@ export function VerdictScreen({ state, dispatch }: ScreenProps) {
           </span>
         )}
       </div>
-      <div className="bubble a-rise rounded-[18px]" style={anim(0.4, 1)}>
-        {end!.finale}
-      </div>
+      <KoPhoto url={ko} caption={end!.finale} />
       {mvp && (
         <div className="a-rise flex flex-col gap-1 rounded-[18px] border-[3px] border-ink bg-ink p-3.5 text-white" style={{ ...anim(0.55, -1), boxShadow: '5px 5px 0 #FF4B3E' }}>
           <span className="comic text-xl text-sun">
-            ATTACCO MVP: <span className="text-white">{mvp}</span>
+            MOSSA MVP: <span className="text-white">{mvp}</span>
           </span>
           <span className="text-[13px] font-medium">
             {rounds.length} round · {opening!.title}
           </span>
         </div>
       )}
-      <div className="a-rise flex items-center justify-center gap-3" style={anim(0.7)}>
+      {evolved ? (
+        <div className="a-slam flex flex-col gap-3 rounded-[18px] border-[3px] border-ink p-3.5" style={{ ...anim(0.7, 1), background: '#2F7BFF', boxShadow: '5px 5px 0 #FFB020' }}>
+          <span className="title-comic text-center text-[34px]">{characterOf(state, w).toUpperCase()} EVOLVE!</span>
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+            <Portrait monster={{ ...winner, stage: winner.stage ?? 0 }} size="lg" />
+            <span className="title-comic text-[40px] text-sun">→</span>
+            <Portrait monster={evoMonster} size="lg" className="rar-frame-leggendaria" />
+          </div>
+          <div className="panel text-center">
+            <span className="label" style={{ color: '#1F5FD6' }}>
+              Forma {stageNow === 2 ? 'leggendaria' : 'evoluta'} · {STAGE_LABEL[stageNow]}
+            </span>
+            <b className="comic block text-[30px] leading-none">{last.evoNames[w]}</b>
+            <span className="text-[13px] leading-snug font-medium">{entry?.wins} vittorie. Nuovo ritratto, nuovo soprannome, e da oggi le sue mosse picchiano un po’ più forte, di nascosto.</span>
+          </div>
+        </div>
+      ) : (
+        last.scars[w] && (
+          <div className="a-rise flex items-center gap-3 rounded-[18px] border-[3px] border-ink p-3" style={{ ...anim(0.7), background: '#FF7AC2' }}>
+            <Portrait monster={winner} size="sm" />
+            <span className="text-[13px] leading-snug font-medium">
+              <b>Nuova cicatrice:</b> «{last.scars[w]}»
+              {entry && winsToNextStage(entry.wins) > 0 && ` · ${winsToNextStage(entry.wins)} vittorie all’evoluzione`}
+            </span>
+          </div>
+        )
+      )}
+      <div className="a-rise flex items-center justify-center gap-3" style={anim(0.8)}>
         {([0, 1] as Side[]).map((s) => (
           <span key={s} className="pill text-base" style={{ background: s === w ? '#FFE14D' : '#fff' }}>
             {state.players[s].name} <span className="comic text-2xl">{state.players[s].wins}</span>
           </span>
         ))}
       </div>
-      <p className="a-rise text-center text-[13px] font-bold" style={anim(0.8)}>
-        Entrambi i mostri sono finiti nel bestiario.
-      </p>
       <Footer>
+        <Button variant="white" disabled={sharing === 'busy'} onClick={share}>
+          {sharing === 'busy' ? 'PREPARO LA CARD…' : sharing === 'downloaded' ? 'CARD SALVATA' : sharing === 'shared' ? 'CONDIVISA!' : 'CONDIVIDI LA CARD'}
+        </Button>
         <Button onClick={() => dispatch({ type: 'nextRound' })}>{over ? 'CHI HA VINTO LA SFIDA?' : 'PROSSIMO ROUND'}</Button>
       </Footer>
     </div>

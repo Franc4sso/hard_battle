@@ -1,18 +1,22 @@
 import {
   movePower,
   normalizeOpening,
+  offlineEvoName,
   offlineJudgement,
   offlineMove,
   offlineOpening,
+  offlineScars,
   playRound,
   type FightState,
   type Fighter,
+  type Judgement,
   type Monster,
   type Move,
   type Moves,
   type Opening,
   type RoundResult,
 } from '../../shared/battle'
+import { evolvingSides, loadBestiary } from './bestiary'
 import { battleRequest, currentEvent, type MatchState } from './match'
 
 const TIMEOUT_MS = 20_000
@@ -79,14 +83,20 @@ type RoundOut = { round: RoundResult; next: FightState; token: string | null }
 export function requestRound(s: MatchState): Promise<RoundOut> {
   const f = s.fight
   return once(`${s.seed}-${s.round}-r${f.rounds.length}`, async () => {
-    const body = f.token ? await post({ stage: 'round', token: f.token }) : null
+    // Chi evolve vincendo: all'AI serve saperlo per inventargli il soprannome.
+    const evolving = evolvingSides(loadBestiary(), s)
+    const body = f.token ? await post({ stage: 'round', token: f.token, evolving }) : null
     const next = body?.next as FightState | undefined
     if (body && isRound(body.round) && next && Array.isArray(next.hp) && typeof body.token === 'string') return { round: body.round, next, token: body.token }
     const fighters = fightersOf(s)
     const roundNo = f.rounds.length + 1
     const used: [Move, Move] = [offlineMove(fighters, 0, roundNo), offlineMove(fighters, 1, roundNo)]
     const moves: Moves = { names: [used[0].name, used[1].name], actions: [used[0].text, used[1].text] }
-    const judgement = offlineJudgement(fighters, used, Math.random)
+    const judgement: Judgement = {
+      ...offlineJudgement(fighters, used, Math.random),
+      scars: offlineScars(fighters, roundNo),
+      evoNames: [evolving[0] ? offlineEvoName(fighters[0], 1) : null, evolving[1] ? offlineEvoName(fighters[1], 1) : null],
+    }
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]
     const power: [number, number] = [movePower(fighters[0].monster, used[0].source), movePower(fighters[1].monster, used[1].source)]
     const out = playRound(f.fs, moves, judgement, names, Math.random, currentEvent(s), power)

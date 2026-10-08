@@ -3,11 +3,19 @@ import { RARITY_LEVEL } from './rarity'
 
 export type Side = 0 | 1
 
+/** Quanto è cresciuto un mostro nel bestiario: 0 normale, 1 evoluto (3 vittorie), 2 leggenda (6). */
+export type Stage = 0 | 1 | 2
+export const STAGE_WINS: readonly number[] = [0, 3, 6]
+export const stageOf = (wins: number): Stage => (wins >= STAGE_WINS[2] ? 2 : wins >= STAGE_WINS[1] ? 1 : 0)
+export const cleanStage = (v: unknown): Stage => (v === 1 || v === 2 ? v : 0)
+
 export interface Monster {
   character: Card
   weapon: Card
   personality: Card
   power: Card
+  /** Un campione tornato dal bestiario porta con sé il suo stadio (ritratto evoluto, un po' più forte). */
+  stage?: Stage
 }
 
 export interface Fighter {
@@ -27,6 +35,7 @@ export interface FighterIds {
   weapon: string
   personality: string
   power: string
+  stage?: Stage
 }
 
 export const other = (s: Side): Side => (s === 0 ? 1 : 0)
@@ -46,7 +55,7 @@ export type Tone = 'aggressiva' | 'furba' | 'pazza'
 export const TONES: readonly Tone[] = ['aggressiva', 'furba', 'pazza']
 
 /** La carta da cui nasce una mossa. */
-export type MoveSource = keyof Monster
+export type MoveSource = 'character' | 'weapon' | 'personality' | 'power'
 export const MOVE_SOURCES: readonly MoveSource[] = ['character', 'weapon', 'personality', 'power']
 export const isMoveSource = (v: unknown): v is MoveSource => MOVE_SOURCES.includes(v as MoveSource)
 
@@ -61,8 +70,8 @@ export interface Move {
 /** Il tipo di una mossa, dalla carta da cui nasce (per il narratore di riserva). */
 export const TONE_OF: Record<MoveSource, Tone> = { character: 'aggressiva', weapon: 'aggressiva', personality: 'furba', power: 'pazza' }
 
-/** Livello di rarità nascosto della carta da cui nasce la mossa: comune 0 … leggendaria 3. */
-export const movePower = (m: Monster, source: MoveSource): 0 | 1 | 2 | 3 => RARITY_LEVEL[m[source].rarity]
+/** Livello nascosto della mossa: la rarità della carta da cui nasce, più uno se il mostro è evoluto (max 3). */
+export const movePower = (m: Monster, source: MoveSource): 0 | 1 | 2 | 3 => Math.min(3, RARITY_LEVEL[m[source].rarity] + (m.stage ? 1 : 0)) as 0 | 1 | 2 | 3
 
 // ---------- eventi dell'arena ----------
 
@@ -121,6 +130,10 @@ export interface Judgement {
   summary: string
   /** Colpo di scena legato ai personaggi, ogni tanto. */
   twist: string | null
+  /** La cicatrice che ciascuno si porta a casa SE vince con questo round: una frase sul momento decisivo. */
+  scars: [string, string]
+  /** Il soprannome da evoluto, solo per chi lo sta per diventare (null altrimenti). */
+  evoNames: [string | null, string | null]
 }
 
 /** Il verdetto dell'AI con in più le due mosse che ha inventato per questo round. */
@@ -192,6 +205,9 @@ export interface RoundResult {
   /** Colpo di scena dei personaggi, se c'è stato. */
   twist: string | null
   summary: string
+  /** Per il bestiario: la cicatrice di chi vince e il soprannome da evoluto, se serve. */
+  scars: [string, string]
+  evoNames: [string | null, string | null]
   end: RoundEnd | null
 }
 
@@ -285,6 +301,8 @@ export function playRound(
       event: event?.text ?? null,
       twist: j.twist,
       summary: j.summary,
+      scars: j.scars,
+      evoNames: j.evoNames,
       end,
     },
     next: { hp, round: roundNo },
@@ -351,7 +369,7 @@ export const sideOf = (v: unknown): Side | null => (v === 0 || v === '0' ? 0 : v
 
 const isStamp = (v: unknown): v is Stamp => STAMPS.includes(String(v).toUpperCase() as Stamp)
 
-export function normalizeJudgement(raw: unknown, backupMoves: [Move, Move]): AiRound | null {
+export function normalizeJudgement(raw: unknown, backupMoves: [Move, Move], backupScars: [string, string] = ['', '']): AiRound | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const scene = text(r.scene, 900)
@@ -359,8 +377,15 @@ export function normalizeJudgement(raw: unknown, backupMoves: [Move, Move]): AiR
   const stamps = pair(r.stamps).map((s) => (isStamp(s) ? (String(s).toUpperCase() as Stamp) : 'CLASSICA')) as [Stamp, Stamp]
   const twist = text(r.twist, 260)
   const moves = pair(r.moves)
+  const scars = pair(r.scars).map((s, i) => text(s, 160) || backupScars[i]) as [string, string]
+  const evo = pair(r.evoNames).map((n) => {
+    const t = text(n, 40)
+    return t && t.toLowerCase() !== 'null' ? t : null
+  }) as [string | null, string | null]
   return {
     moves: [normalizeMove(moves[0], backupMoves[0]), normalizeMove(moves[1], backupMoves[1])],
+    scars,
+    evoNames: evo,
     stamps,
     hits: pair(r.hits).map((h) => clampInt<Hit>(h, 3, 1)) as [Hit, Hit],
     recover: pair(r.recover).map((h) => clampInt<Recover>(h, 2, 0)) as [Recover, Recover],
@@ -396,6 +421,16 @@ export function offlineMove(fighters: [Fighter, Fighter], side: Side, roundNo: n
   ]
   return all[(roundNo - 1 + side) % all.length]
 }
+
+/** Cicatrici di riserva: una frase per ciascuno, nel caso vinca con questo round. */
+export function offlineScars(fighters: [Fighter, Fighter], roundNo: number): [string, string] {
+  const n = (s: Side) => fighters[s].monster.character.name
+  const w = (s: Side) => lower(fighters[s].monster.weapon.name)
+  return [`Ha steso ${n(1)} al round ${roundNo} a colpi di ${w(0)}`, `Ha steso ${n(0)} al round ${roundNo} a colpi di ${w(1)}`]
+}
+
+/** Soprannome da evoluto di riserva. */
+export const offlineEvoName = (f: Fighter, stage: Stage) => `${shortName(f.monster.character.name)} ${stage >= 2 ? 'l’Immortale' : 'il Terribile'}`
 
 export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: () => number = Math.random): Opening {
   const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)]
@@ -453,5 +488,7 @@ export function offlineJudgement(fighters: [Fighter, Fighter], used: [Move, Move
     ],
     summary: why,
     twist: null,
+    scars: offlineScars(fighters, 1),
+    evoNames: [null, null],
   }
 }

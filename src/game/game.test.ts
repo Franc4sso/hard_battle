@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ARENAS, DECKS, DIRTY_DECKS, HEALING_POWER_IDS, SABOTAGE_DECKS, SLOTS, decksFor, findCard } from '../../shared/cards'
 import type { Rarity } from '../../shared/rarity'
 import {
@@ -644,10 +644,16 @@ describe('ritratti', () => {
   })
 
   it('se Cloudflare non risponde la scheda resta senza ritratto', async () => {
-    const fetch = (async () => new Response('{}', { status: 429 })) as unknown as typeof globalThis.fetch
+    const body = JSON.stringify({ success: false, errors: [{ code: 4006, message: 'daily free allocation used up' }] })
+    const fetch = (async () => new Response(body, { status: 429 })) as unknown as typeof globalThis.fetch
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     const r = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, fetch }, memoryStore())
     expect(r.status).toBe(502)
     expect(r.headers['cache-control']).toBe('no-store')
+    // Il motivo arriva nella risposta e nei log, per capire cosa non va.
+    expect(r.body).toEqual({ error: 'generation_failed', reason: 'cloudflare_429_4006' })
+    expect(err).toHaveBeenCalled()
+    err.mockRestore()
   })
 })
 

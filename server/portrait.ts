@@ -24,7 +24,7 @@ export interface PortraitStore {
 
 export interface PortraitResult {
   status: number
-  body: Uint8Array | { error: string }
+  body: Uint8Array | { error: string; reason?: string }
   headers: Record<string, string>
 }
 
@@ -156,9 +156,15 @@ export function parsePortraitIds(characterId: unknown, weaponId: unknown): { cha
   return { character, weapon }
 }
 
-/** Chiede l'immagine a Cloudflare; null se il servizio non risponde o rifiuta. */
-export async function generatePortrait(cfg: PortraitConfig, prompt: string): Promise<Uint8Array | null> {
-  if (!cfg.accountId || !cfg.token) return null
+export type GenerateResult = { image: Uint8Array } | { reason: string }
+
+/**
+ * Chiede l'immagine a Cloudflare. Se rifiuta restituisce il motivo (status e
+ * codice d'errore di Cloudflare) e lo scrive nei log della funzione: senza,
+ * un 502 non dice se è finita la quota del giorno, il token è scaduto o altro.
+ */
+export async function generatePortrait(cfg: PortraitConfig, prompt: string): Promise<GenerateResult> {
+  if (!cfg.accountId || !cfg.token) return { reason: 'missing_key' }
   const doFetch = cfg.fetch ?? fetch
   try {
     const res = await doFetch(`https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/ai/run/${cfg.model || DEFAULT_PORTRAIT_MODEL}`, {
@@ -167,13 +173,23 @@ export async function generatePortrait(cfg: PortraitConfig, prompt: string): Pro
       body: JSON.stringify({ prompt, steps: STEPS }),
       signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
     })
-    if (!res.ok) return null
-    const json = (await res.json()) as { result?: { image?: unknown } }
+    const text = await res.text()
+    let json: { result?: { image?: unknown }; errors?: { code?: number; message?: string }[] } = {}
+    try {
+      json = JSON.parse(text)
+    } catch {
+      // Risposta non JSON: il testo finisce nel log qui sotto.
+    }
     const b64 = json.result?.image
-    if (typeof b64 !== 'string' || !b64) return null
-    return new Uint8Array(Buffer.from(b64, 'base64'))
-  } catch {
-    return null
+    if (res.ok && typeof b64 === 'string' && b64) return { image: new Uint8Array(Buffer.from(b64, 'base64')) }
+    const err = json.errors?.[0]
+    const reason = `cloudflare_${res.status}${err?.code ? `_${err.code}` : ''}`
+    console.error(`[portrait] ${reason}: ${err?.message ?? text.slice(0, 300)}`)
+    return { reason }
+  } catch (e) {
+    const reason = e instanceof Error && e.name === 'TimeoutError' ? 'cloudflare_timeout' : 'cloudflare_unreachable'
+    console.error(`[portrait] ${reason}: ${e instanceof Error ? e.message : String(e)}`)
+    return { reason }
   }
 }
 
@@ -192,8 +208,9 @@ export async function handlePortraitRequest(characterId: unknown, weaponId: unkn
   if (cached) return { status: 200, body: cached, headers: IMAGE_HEADERS }
   if (!cfg.accountId || !cfg.token) return { status: 503, body: { error: 'missing_key' }, headers: NO_CACHE }
   const subject = (await translateSubject(cfg, ids.character, ids.weapon)) ?? rawSubject(ids.character, ids.weapon)
-  const image = await generatePortrait(cfg, portraitPrompt(subject, key))
-  if (!image) return { status: 502, body: { error: 'generation_failed' }, headers: NO_CACHE }
+  const out = await generatePortrait(cfg, portraitPrompt(subject, key))
+  if (!('image' in out)) return { status: 502, body: { error: 'generation_failed', reason: out.reason }, headers: NO_CACHE }
+  const { image } = out
   await store.set(key, image).catch(() => {
     // Senza cache si rigenera la prossima volta: costa una chiamata, non la partita.
   })

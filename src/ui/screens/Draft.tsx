@@ -254,24 +254,22 @@ export function ReadyScreen({ state, dispatch }: ScreenProps) {
   useEffect(() => preloadPortrait(m), [m])
   return (
     <div className="screen">
-      <div className="mt-2 flex items-center gap-3">
-        <Portrait monster={m} size="md" className="a-pop" />
-        <h1 className="title-comic a-slam text-[44px]" style={anim(0, -2)}>
-          {state.champion ? (
-            <>
-              IL CAMPIONE
-              <br />
-              TORNA!
-            </>
-          ) : (
-            <>
-              ECCO IL TUO
-              <br />
-              MOSTRO!
-            </>
-          )}
-        </h1>
-      </div>
+      <h1 className="title-comic a-slam mt-2 text-[44px]" style={anim(0, -2)}>
+        {state.champion ? (
+          <>
+            IL CAMPIONE
+            <br />
+            TORNA!
+          </>
+        ) : (
+          <>
+            ECCO IL TUO
+            <br />
+            MOSTRO!
+          </>
+        )}
+      </h1>
+      <Portrait monster={m} size="lg" className={`a-pop rar-frame-${m.character.rarity}`} />
       <div className="panel a-pop flex flex-col gap-3" style={anim(0.15, 1)}>
         {SLOTS.map((s, i) => {
           const isGift = s === gift.slot

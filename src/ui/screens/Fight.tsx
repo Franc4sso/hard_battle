@@ -35,14 +35,18 @@ function VersusCard({ state, side, className, delay }: { state: MatchState; side
     ['Potere', m.power],
   ]
   return (
-    <div className={`panel flex min-w-0 flex-col gap-2 p-2.5 ${className}`} style={{ ...anim(delay), rotate: side ? '1.2deg' : '-1.2deg', boxShadow: `5px 5px 0 ${PLAYER_COLORS[side]}` }}>
-      <Portrait monster={m} size="lg" className={`rar-frame-${m.character.rarity}`} />
-      <span className="label truncate" style={{ color: PLAYER_TEXT[side] }}>
-        {state.players[side].name}
-      </span>
-      <b className="comic text-[22px] leading-[0.95]">{m.character.name}</b>
-      <RarityTag rarity={m.character.rarity} />
-      <ul className="flex flex-col gap-0.5 text-[12px] leading-snug">
+    <div className={`panel flex min-w-0 flex-col gap-2 p-2 ${className}`} style={{ ...anim(delay), rotate: side ? '0.8deg' : '-0.8deg', boxShadow: `6px 6px 0 ${PLAYER_COLORS[side]}` }}>
+      <div className="relative">
+        <Portrait monster={m} size="lg" className={`rar-frame-${m.character.rarity}`} />
+        <div className="portrait-caption">
+          <span className="label" style={{ color: side ? '#9CC3FF' : '#FFB3AD' }}>
+            {state.players[side].name}
+          </span>
+          <b className="comic text-[30px] leading-[0.9] text-white">{m.character.name}</b>
+          <RarityTag rarity={m.character.rarity} className="mt-1 self-start" />
+        </div>
+      </div>
+      <ul className="flex flex-wrap gap-x-3 gap-y-0.5 px-1 text-[12px] leading-snug">
         {rows.map(([k, card]) => (
           <li key={k}>
             <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span> <RarityTag rarity={card.rarity} />
@@ -73,10 +77,10 @@ export function VersusScreen(props: ScreenProps) {
         <b className="text-xl leading-tight font-extrabold">{state.arena.name}</b>
         <span className="text-sm leading-snug font-medium">{state.arena.desc}</span>
       </div>
-      <div className="relative grid grid-cols-2 gap-3">
+      <div className="relative flex flex-col gap-5">
         <VersusCard state={state} side={0} className="a-slide-l" delay={0.25} />
         <VersusCard state={state} side={1} className="a-slide-r" delay={0.45} />
-        <div className="title-comic a-slam pointer-events-none absolute top-[38%] left-1/2 -translate-x-1/2 text-[64px] text-red" style={anim(0.7, -8)}>
+        <div className="title-comic a-slam pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-[72px] text-red" style={anim(0.7, -10)}>
           VS
         </div>
       </div>
@@ -526,7 +530,7 @@ export function VerdictScreen({ state, dispatch }: ScreenProps) {
   return (
     <div className="screen">
       <div className="mt-2 flex flex-col items-center gap-2 text-center">
-        <Portrait monster={state.monsters[w] as Monster} size="lg" className="a-pop max-w-[220px]" />
+        <Portrait monster={state.monsters[w] as Monster} size="lg" className="a-pop max-w-[300px]" />
         <span className="pill a-pop">{opening!.nicknames[w].toUpperCase()}</span>
         <h1 className="title-comic a-slam text-[60px]" style={anim(0.15, -3)}>
           VINCE

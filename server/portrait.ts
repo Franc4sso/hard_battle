@@ -32,18 +32,58 @@ export const DEFAULT_PORTRAIT_MODEL = '@cf/black-forest-labs/flux-1-schnell'
 /** Modello piccolo e veloce: deve solo tradurre due righe. */
 export const DEFAULT_TRANSLATE_MODEL = 'openai/gpt-oss-20b'
 // Le funzioni Netlify gratuite si fermano a 10 s: pochi passi di diffusione e traduzione rapida.
-const STEPS = 4
+const STEPS = 5
 const IMAGE_TIMEOUT_MS = 8_000
-const TRANSLATE_TIMEOUT_MS = 2_500
+const TRANSLATE_TIMEOUT_MS = 3_000
 
-/** Stile fisso per tutte le carte, così i ritratti sembrano dello stesso disegnatore. */
+/**
+ * Lo stile è fisso (stesso disegnatore per tutte le carte); tutto il resto,
+ * ambientazione, posa, inquadratura e colori, cambia da carta a carta, se no
+ * i ritratti sembrano tutti uguali.
+ */
 const STYLE =
-  'Japanese anime cel-shaded illustration in the style of the Pokemon anime: clean bold black outlines, flat bright colors, big expressive eyes, dynamic fighting pose, full body, centered, soft blurred forest background. No text, no letters, no watermark.'
+  'Japanese anime cel-shaded illustration, 90s anime TV series look: clean bold black outlines, flat vivid colors with simple cel shading, expressive face, strong silhouette, full body visible. No text, no letters, no logo, no watermark, no frame.'
 
-/** Le due carte come le legge il modello immagine: in inglese se la traduzione è riuscita, altrimenti così come sono. */
+/** Inquadrature: una per coppia, scelta in modo fisso dagli id, così lo stesso mostro ha sempre la stessa. */
+const ANGLES = [
+  'low camera angle looking up at the character, who towers over the viewer',
+  'three-quarter view, mid-action, motion lines behind the character',
+  'dramatic close shot from the waist up, the weapon thrust toward the camera',
+  'wide shot, the whole body in a wind-up stance, lots of background visible',
+  'slight dutch angle, the character leaping toward the viewer',
+  'side profile, charging from left to right at full speed',
+]
+
+/** Ambientazioni di riserva quando la traduzione non ne propone una: varie, mai la stessa foresta. */
+const SETTINGS = [
+  'a sunlit Italian piazza with a fountain',
+  'a neon-lit city street at night in the rain',
+  'a volcanic arena with lava cracks',
+  'a beach at sunset with striped umbrellas',
+  'a rooftop above a sprawling city at dusk',
+  'a snowy mountain pass under a blizzard',
+  'a chaotic restaurant kitchen with flames',
+  'a packed stadium under floodlights',
+  'a dusty western saloon',
+  'a cluttered grandma’s living room with doilies',
+]
+
+function hash(s: string): number {
+  let h = 2166136261
+  for (const ch of s) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0
+  return h
+}
+
+/** Le due carte come le legge il modello immagine, più i dettagli di scena che la traduzione può suggerire. */
 export interface PortraitSubject {
   character: string
   weapon: string
+  /** Dove si trova: il mondo del personaggio (Venezia per il piccione, un sottomarino per il kraken). */
+  setting?: string
+  /** Cosa sta facendo con l'arma, una posa precisa. */
+  pose?: string
+  /** Due colori dominanti. */
+  palette?: string
 }
 
 export const rawSubject = (character: Card, weapon: Card): PortraitSubject => ({
@@ -51,12 +91,24 @@ export const rawSubject = (character: Card, weapon: Card): PortraitSubject => ({
   weapon: `"${weapon.name}" (${weapon.desc})`,
 })
 
-export function portraitPrompt(subject: PortraitSubject): string {
-  return `Character: ${subject.character}. The character is holding and fighting with this weapon: ${subject.weapon}. The weapon must look exactly like that object. ${STYLE}`
+/** `key` decide inquadratura e ambientazione di riserva: stessa coppia, stesso ritratto. */
+export function portraitPrompt(subject: PortraitSubject, key = ''): string {
+  const h = hash(key)
+  const angle = ANGLES[h % ANGLES.length]
+  const setting = subject.setting || SETTINGS[Math.floor(h / 7) % SETTINGS.length]
+  const pose = subject.pose || 'in a dynamic fighting pose, swinging the weapon'
+  const palette = subject.palette ? ` Dominant colors: ${subject.palette}.` : ''
+  return `${subject.character}, ${pose}, holding this weapon: ${subject.weapon}. The weapon must look exactly like that object. Setting: ${setting}. Camera: ${angle}.${palette} ${STYLE}`
 }
 
 const TRANSLATE_SYSTEM =
-  'You translate Italian trading-card text into short English visual descriptions for an image generator. Reply ONLY with JSON: {"character":"...","weapon":"..."}. Each value is one sentence, max 25 words, concrete and visual: what the thing looks like, its mood or expression, what it is doing. Keep the comedy. Translate idioms into the actual object (e.g. "ciabatta della nonna" is a grandma\'s slipper). No names of real brands. Never write the name of a real person: describe them as an anonymous caricature instead (haircut, moustache, uniform, expression, body shape) so the drawing is recognizable without the name. Crude or vulgar cards are fine: describe them as cartoon slapstick, no explicit nudity, no genitals.'
+  'You turn Italian trading-card text into a vivid English scene for an image generator. Reply ONLY with JSON: {"character":"...","weapon":"...","setting":"...","pose":"...","palette":"..."}. ' +
+  '"character": one sentence, max 25 words: species or type, body shape, clothes, face and mood, distinctive details from the card. ' +
+  '"weapon": one sentence, max 20 words: what the object looks like. Translate idioms into the real object ("ciabatta della nonna" is a grandma\'s slipper). ' +
+  '"setting": max 12 words, a specific place from the character\'s own world (a Venice canal for a Venetian pigeon, a submarine for a kraken, a 1980s office for a bureaucrat). Never a generic forest. ' +
+  '"pose": max 15 words, one specific action with the weapon, with the mood of the character (lazy, furious, sneaky, proud…). ' +
+  '"palette": two or three dominant colors that fit the character. ' +
+  'Keep the comedy. No real brand names. Never write the name of a real person: describe them as an anonymous caricature (haircut, moustache, uniform, expression, body shape) so the drawing is recognizable without the name. Crude or vulgar cards are fine as cartoon slapstick, no explicit nudity, no genitals.'
 
 /** Traduce le due carte in inglese con Groq; null se non c'è la chiave o non risponde in tempo. */
 export async function translateSubject(cfg: PortraitConfig, character: Card, weapon: Card): Promise<PortraitSubject | null> {
@@ -82,9 +134,13 @@ export async function translateSubject(cfg: PortraitConfig, character: Card, wea
     if (!res.ok) return null
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
     const out = JSON.parse(data.choices?.[0]?.message?.content ?? '') as Partial<PortraitSubject>
-    const clean = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, 240) : '')
-    const subject = { character: clean(out.character), weapon: clean(out.weapon) }
-    return subject.character && subject.weapon ? subject : null
+    const clean = (v: unknown, max = 240) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '')
+    const subject: PortraitSubject = { character: clean(out.character), weapon: clean(out.weapon) }
+    if (!subject.character || !subject.weapon) return null
+    const setting = clean(out.setting, 100)
+    const pose = clean(out.pose, 120)
+    const palette = clean(out.palette, 60)
+    return { ...subject, ...(setting ? { setting } : {}), ...(pose ? { pose } : {}), ...(palette ? { palette } : {}) }
   } catch {
     return null
   }
@@ -136,7 +192,7 @@ export async function handlePortraitRequest(characterId: unknown, weaponId: unkn
   if (cached) return { status: 200, body: cached, headers: IMAGE_HEADERS }
   if (!cfg.accountId || !cfg.token) return { status: 503, body: { error: 'missing_key' }, headers: NO_CACHE }
   const subject = (await translateSubject(cfg, ids.character, ids.weapon)) ?? rawSubject(ids.character, ids.weapon)
-  const image = await generatePortrait(cfg, portraitPrompt(subject))
+  const image = await generatePortrait(cfg, portraitPrompt(subject, key))
   if (!image) return { status: 502, body: { error: 'generation_failed' }, headers: NO_CACHE }
   await store.set(key, image).catch(() => {
     // Senza cache si rigenera la prossima volta: costa una chiamata, non la partita.

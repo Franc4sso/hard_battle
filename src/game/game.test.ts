@@ -618,18 +618,27 @@ describe('ritratti', () => {
     return { fetch, calls }
   }
 
-  it('il prompt descrive personaggio e arma nello stile fisso', () => {
-    const p = portraitPrompt(rawSubject(DECKS.character[0], DECKS.weapon[0]))
+  it('il prompt descrive personaggio e arma nello stile fisso, con scena e inquadratura che cambiano da coppia a coppia', () => {
+    const p = portraitPrompt(rawSubject(DECKS.character[0], DECKS.weapon[0]), 'a')
     expect(p).toContain(DECKS.character[0].name)
     expect(p).toContain(DECKS.weapon[0].desc)
     expect(p).toContain('No text')
+    expect(p).not.toContain('forest')
+    const q = portraitPrompt(rawSubject(DECKS.character[0], DECKS.weapon[0]), 'b')
+    expect(q).not.toBe(p)
+    expect(portraitPrompt(rawSubject(DECKS.character[0], DECKS.weapon[0]), 'a')).toBe(p)
+    // La scena suggerita dalla traduzione vince su quella di riserva.
+    const rich = portraitPrompt({ character: 'a pigeon', weapon: 'a baguette', setting: 'a Venice canal', pose: 'pecking furiously', palette: 'teal and grey' }, 'a')
+    expect(rich).toContain('Setting: a Venice canal')
+    expect(rich).toContain('pecking furiously')
+    expect(rich).toContain('Dominant colors: teal and grey')
   })
 
   it('con la chiave Groq traduce le carte prima di disegnare', async () => {
     const prompts: string[] = []
     const fetch = (async (url: string, init: RequestInit) => {
       if (url.includes('groq')) {
-        const content = JSON.stringify({ character: 'a furious koala with red eyes', weapon: "a grandma's slipper" })
+        const content = JSON.stringify({ character: 'a furious koala with red eyes', weapon: "a grandma's slipper", setting: 'a eucalyptus tree at 3am' })
         return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 })
       }
       prompts.push(JSON.parse(init.body as string).prompt)
@@ -638,6 +647,7 @@ describe('ritratti', () => {
     const r = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, groqKey: 'g', fetch }, memoryStore())
     expect(r.status).toBe(200)
     expect(prompts[0]).toContain("a grandma's slipper")
+    expect(prompts[0]).toContain('Setting: a eucalyptus tree at 3am')
     expect(prompts[0]).not.toContain(DECKS.weapon[0].desc)
   })
 

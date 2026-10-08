@@ -2,28 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { ARENAS, DECKS, DIRTY_DECKS, HEALING_POWER_IDS, SABOTAGE_DECKS, SLOTS, decksFor, findCard } from '../../shared/cards'
 import type { Rarity } from '../../shared/rarity'
 import {
-  ATTACKS_PER_FIGHTER,
-  ATTACK_TONES,
   LAST_BREATH,
   MAX_ROUNDS,
   START,
-  attackPower,
-  cleanPicks,
   consistent,
   hpState,
-  normalizeAttacks,
+  movePower,
   normalizeJudgement,
+  normalizeMove,
   normalizeOpening,
-  offlineAttacks,
   offlineJudgement,
+  offlineMove,
   offlineOpening,
   playRound,
   scheduleEvents,
-  type Attack,
   type FightState,
   type Fighter,
   type Judgement,
   type Monster,
+  type Move,
   type Moves,
 } from '../../shared/battle'
 import { generateOpening, generateRound, roundPrompt } from '../../server/groq'
@@ -31,7 +28,7 @@ import { handleBattleRequest, hasDirtyCard, parseRequest } from '../../server/ha
 import { handlePortraitRequest, memoryStore, portraitPrompt, rawSubject } from '../../server/portrait'
 import { sign, verify } from '../../server/token'
 import { withBattle } from './bestiary'
-import { battleRequest, createMatch, currentSlot, draftSlots, nextChooser, reduce, type MatchState } from './match'
+import { battleRequest, createMatch, currentSlot, draftSlots, reduce, type MatchState } from './match'
 
 function monster(i = 0): Monster {
   return { character: DECKS.character[i], weapon: DECKS.weapon[i], personality: DECKS.personality[i], power: DECKS.power[i] }
@@ -44,13 +41,7 @@ function fighters(): [Fighter, Fighter] {
 }
 const NAMES: [string, string] = ['A', 'B']
 const half = () => 0.5
-const ATTACKS: Attack[] = [
-  { name: 'Carica', text: 'Attacca forte', tone: 'aggressiva' },
-  { name: 'Legnata', text: 'Colpisce con l’arma', tone: 'aggressiva' },
-  { name: 'Finta', text: 'Fa una finta', tone: 'furba' },
-  { name: 'Potere', text: 'Usa il superpotere', tone: 'pazza' },
-  { name: 'Pazzia', text: 'Fa una pazzia', tone: 'pazza' },
-]
+const mv = (name: string, source: Move['source'] = 'weapon', text = `fa ${name}`): Move => ({ name, text, source })
 const judge = (over: Partial<Judgement> = {}): Judgement => ({
   stamps: ['CLASSICA', 'FURBA'],
   hits: [1, 2],
@@ -79,23 +70,13 @@ function draftRound(s: MatchState): MatchState {
   return s
 }
 
-/** Dal VS alla scelta degli attacchi, con presentazione e attacchi già arrivati. */
+/** Dal VS alla rissa, con la presentazione già arrivata. */
 const startFight = (s: MatchState, token: string | null = null) =>
-  reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: { ...offlineOpening(fighters(), ARENAS[0]), attacks: [ATTACKS, ATTACKS] }, token })
-
-/** Entrambi scelgono i 2 attacchi: da qui la rissa va da sola. */
-function pickAll(s: MatchState): MatchState {
-  for (let k = 0; k < 2; k++) {
-    const who = nextChooser(s)!
-    s = reduce(s, { type: 'pickAttacks', side: who, picks: who === 0 ? [0, 2] : [3, 4] })
-  }
-  if (nextChooser(s) !== undefined) throw new Error('scelta rifiutata')
-  return s
-}
+  reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: offlineOpening(fighters(), ARENAS[0]), token })
 
 /** Rissa giocata fino alla fine: il giocatore 0 colpisce sempre devastante. */
 function fightToEnd(s: MatchState): MatchState {
-  s = pickAll(startFight(s))
+  s = startFight(s)
   for (let guard = 0; !s.fight.end; guard++) {
     if (guard > MAX_ROUNDS) throw new Error('la rissa non finisce')
     const { round, next } = play(s.fight.fs, judge({ hits: [0, 3], winner: 0 }))
@@ -192,7 +173,7 @@ describe('carte trappola', () => {
   it('l’AI sa quali carte sono trappole', () => {
     const f = fighters()
     const trapped: [Fighter, Fighter] = [{ ...f[0], monster: { ...f[0].monster, weapon: SABOTAGE_DECKS.weapon[0] } }, f[1]]
-    const p = roundPrompt(trapped, ARENAS[0], { title: 'T' }, START, [], [[ATTACKS[0], ATTACKS[1]], [ATTACKS[2], ATTACKS[3]]])
+    const p = roundPrompt(trapped, ARENAS[0], { title: 'T' }, START, [])
     expect(p).toContain('CARTA TRAPPOLA')
   })
 })
@@ -321,26 +302,21 @@ describe('regole del round', () => {
   })
 })
 
-describe('attacchi', () => {
-  it('sempre 5, nell’ordine delle carte; quello che manca o è doppio arriva dalla riserva', () => {
-    const backup = offlineAttacks(fighters(), 0)
-    expect(backup).toHaveLength(ATTACKS_PER_FIGHTER)
-    expect(backup.map((a) => a.tone)).toEqual(ATTACK_TONES)
-    const a = normalizeAttacks(
-      [
-        { name: 'Carica', text: 'Un colpo', tone: 'aggressiva' },
-        { name: 'Senza testo' },
-        { name: 'carica', text: 'Doppione col nome uguale', tone: 'furba' },
-        { name: 'Tipo strano', text: 'x', tone: 'boh' },
-      ],
-      backup,
-    )
-    expect(a[0]).toEqual({ name: 'Carica', text: 'Un colpo', tone: 'aggressiva' })
-    expect(a[1]).toBe(backup[1])
-    expect(a[2]).toBe(backup[2])
-    expect(a[3]).toEqual({ name: 'Tipo strano', text: 'x', tone: backup[3].tone })
-    expect(a[4]).toBe(backup[4])
-    expect(normalizeAttacks(undefined, backup)).toEqual(backup)
+describe('mosse', () => {
+  it('una mossa dell’AI vale se ha nome e testo; la carta sbagliata diventa quella di riserva', () => {
+    const backup = mv('Riserva', 'power')
+    expect(normalizeMove({ name: 'Ciabattata', text: 'Tira la ciabatta', source: 'weapon' }, backup)).toEqual({ name: 'Ciabattata', text: 'Tira la ciabatta', source: 'weapon' })
+    expect(normalizeMove({ name: 'Senza testo' }, backup)).toBe(backup)
+    expect(normalizeMove({ name: 'Boh', text: 'x', source: 'arena' }, backup)).toEqual({ name: 'Boh', text: 'x', source: 'power' })
+    expect(normalizeMove(undefined, backup)).toBe(backup)
+  })
+
+  it('il narratore di riserva gira tra le quattro carte, round dopo round, sfalsato tra i due', () => {
+    const f = fighters()
+    const sources = [1, 2, 3, 4, 5].map((r) => offlineMove(f, 0, r).source)
+    expect(sources).toEqual(['character', 'weapon', 'personality', 'power', 'character'])
+    expect(offlineMove(f, 1, 1).source).toBe('weapon')
+    expect(offlineMove(f, 0, 2).text).toContain(f[1].monster.character.name)
   })
 
   it('la rarità pesa sui danni di nascosto: una leggendaria colpisce sempre un po’ più forte', () => {
@@ -351,51 +327,26 @@ describe('attacchi', () => {
     expect(strong.damage[1]).toBeGreaterThan(calm.damage[1])
     // Una comune non aggiunge mai niente, nemmeno con la fortuna dalla sua.
     expect(playRound(START, MOVES, judge({ hits: [1, 1], winner: null }), NAMES, () => 0, undefined, [0, 0]).round.hits).toEqual([1, 1])
-    // L'attacco k nasce dalla carta k; l'idea folle dal personaggio.
+    // La forza viene dalla carta da cui nasce la mossa.
     const m: Monster = { ...monster(0), weapon: { ...monster(0).weapon, rarity: 'leggendaria' }, character: { ...monster(0).character, rarity: 'epica' } }
-    expect(attackPower(m, 1)).toBe(3)
-    expect(attackPower(m, 0)).toBe(2)
-    expect(attackPower(m, 4)).toBe(2)
-  })
-
-  it('si scelgono 2 indici distinti tra 0 e 4', () => {
-    expect(cleanPicks([0, 4])).toEqual([0, 4])
-    expect(cleanPicks(['1', '3'])).toEqual([1, 3])
-    expect(cleanPicks([2, 2])).toBeUndefined()
-    expect(cleanPicks([0, 5])).toBeUndefined()
-    expect(cleanPicks([0])).toBeUndefined()
-    expect(cleanPicks('ab')).toBeUndefined()
+    expect(movePower(m, 'weapon')).toBe(3)
+    expect(movePower(m, 'character')).toBe(2)
+    expect(movePower(m, 'power')).toBe(0)
   })
 })
 
 describe('rissa e partita', () => {
-  it('gli attacchi si scelgono a turno, prima chi ha aperto il round, poi la rissa parte da sola', () => {
+  it('dal VS si va dritti alla rissa, e i round arrivano uno dopo l’altro', () => {
     let s = startFight(draftRound(createMatch(['A', 'B'], 1, 9)), 't')
-    expect(s.phase).toBe('attacks')
-    expect(s.fight.opening?.attacks[0]).toEqual(ATTACKS)
-    expect(nextChooser(s)).toBe(0)
-    // Fuori turno non si può scegliere, e nemmeno due volte lo stesso attacco.
-    expect(reduce(s, { type: 'pickAttacks', side: 1, picks: [0, 1] }).fight.picks).toEqual([null, null])
-    expect(reduce(s, { type: 'pickAttacks', side: 0, picks: [1, 1] }).fight.picks).toEqual([null, null])
-    s = reduce(s, { type: 'pickAttacks', side: 0, picks: [0, 2] })
-    expect(s.phase).toBe('attacks')
-    expect(nextChooser(s)).toBe(1)
-    s = reduce(s, { type: 'pickAttacks', side: 1, picks: [4, 3] })
-    expect(s.fight.picks).toEqual([[0, 2], [4, 3]])
     expect(s.phase).toBe('battle')
-    expect(nextChooser(s)).toBeUndefined()
+    expect(s.fight.token).toBe('t')
     const { round, next } = play(s.fight.fs, judge())
     s = reduce(s, { type: 'roundReady', round, next, token: 't2' })
     expect(s.fight.token).toBe('t2')
     expect(s.fight.rounds).toHaveLength(1)
-    // Le scelte restano per tutta la rissa.
-    expect(s.fight.picks).toEqual([[0, 2], [4, 3]])
-  })
-
-  it('il secondo round apre l’altro giocatore', () => {
-    let s = fightToEnd(draftRound(createMatch(['A', 'B'], 3, 9)))
-    s = startFight(draftRound(reduce(s, { type: 'nextRound' })))
-    expect(nextChooser(s)).toBe(1)
+    // Senza presentazione il round non si accetta.
+    const noOpening = reduce(reduce(draftRound(createMatch(['A', 'B'], 1, 9)), { type: 'fight' }), { type: 'roundReady', round, next, token: null })
+    expect(noOpening.fight.rounds).toHaveLength(0)
   })
 
   it('qualcuno crolla, la vittoria si conta e la partita va avanti', () => {
@@ -416,39 +367,42 @@ describe('rissa e partita', () => {
 })
 
 describe('risposte dell’AI', () => {
-  it('ripara un verdetto sbagliato: colpi fuori scala, timbri inventati, pari scritto come null, attacco usato strano', () => {
-    const j = normalizeJudgement({ scene: 'Succede di tutto', hits: [9, -2], recover: [5, 0], stamps: ['WOW', 'geniale'], winner: null, used: ['1', 7], twist: 'null' })!
+  it('ripara un verdetto sbagliato: colpi fuori scala, timbri inventati, pari scritto come null, mossa senza testo', () => {
+    const backup: [Move, Move] = [mv('R0'), mv('R1', 'power')]
+    const j = normalizeJudgement(
+      { scene: 'Succede di tutto', hits: [9, -2], recover: [5, 0], stamps: ['WOW', 'geniale'], winner: null, moves: [{ name: 'Solo nome' }, { name: 'Ok', text: 'fa ok', source: 'character' }], twist: 'null' },
+      backup,
+    )!
     expect(j.hits).toEqual([3, 0])
     expect(j.recover).toEqual([2, 0])
     expect(j.stamps).toEqual(['CLASSICA', 'GENIALE'])
     // null non deve diventare "vince il combattente 0".
     expect(j.winner).toBeNull()
-    expect(j.used).toEqual([1, 0])
+    expect(j.moves[0]).toBe(backup[0])
+    expect(j.moves[1]).toEqual({ name: 'Ok', text: 'fa ok', source: 'character' })
     expect(j.twist).toBeNull()
-    expect(normalizeJudgement({ scene: 'x', winner: '1', twist: 'Il koala crolla' })!).toMatchObject({ winner: 1, used: [0, 0], twist: 'Il koala crolla' })
+    expect(normalizeJudgement({ scene: 'x', winner: '1', twist: 'Il koala crolla' }, backup)!).toMatchObject({ winner: 1, moves: backup, twist: 'Il koala crolla' })
     // Senza scena il verdetto non vale.
-    expect(normalizeJudgement({ hits: [1, 1] })).toBeNull()
+    expect(normalizeJudgement({ hits: [1, 1] }, backup)).toBeNull()
   })
 
   it('il narratore di riserva: la furbata punisce chi carica, la carica travolge la pazzia, la pazzia spiazza la furbata', () => {
     const f = fighters()
-    const atk = (tone: 'aggressiva' | 'furba' | 'pazza'): Attack => ({ name: tone, text: `fa ${tone}`, tone })
-    const w = (a: 'aggressiva' | 'furba' | 'pazza', b: 'aggressiva' | 'furba' | 'pazza') => offlineJudgement(f, [atk(a), atk(b)], half).winner
-    expect(w('furba', 'aggressiva')).toBe(0)
-    expect(w('aggressiva', 'pazza')).toBe(0)
-    expect(w('pazza', 'furba')).toBe(0)
-    expect(w('aggressiva', 'furba')).toBe(1)
-    const j = offlineJudgement(f, [atk('furba'), atk('furba')], half)
+    const w = (a: Move['source'], b: Move['source']) => offlineJudgement(f, [mv('a', a), mv('b', b)], half).winner
+    expect(w('personality', 'weapon')).toBe(0)
+    expect(w('weapon', 'power')).toBe(0)
+    expect(w('power', 'personality')).toBe(0)
+    expect(w('character', 'personality')).toBe(1)
+    const j = offlineJudgement(f, [mv('a', 'personality'), mv('b', 'personality')], half)
     expect(j.scene).toContain(f[0].monster.character.name)
     expect(j.twist).toBeNull()
   })
 
-  it('il narratore di riserva prepara presentazione, eventi e i 5 attacchi', () => {
+  it('il narratore di riserva prepara presentazione ed eventi', () => {
     const o = offlineOpening(fighters(), ARENAS[4])
     expect(o.events).toHaveLength(2)
     expect(o.events.every((e) => e.text.length > 10)).toBe(true)
-    expect(o.attacks.every((x) => x.length === ATTACKS_PER_FIGHTER)).toBe(true)
-    expect(normalizeOpening({ title: 'T', attacks: [[{ name: 'Uno', text: 'Fa uno', tone: 'aggressiva' }], []] }, fighters(), 'ai')!.attacks[0][0].name).toBe('Uno')
+    expect(normalizeOpening({ title: 'T', nicknames: ['Uno', 'Due'] }, fighters(), 'ai')!.nicknames).toEqual(['Uno', 'Due'])
   })
 })
 
@@ -459,10 +413,12 @@ describe('server', () => {
       lastSent = JSON.parse(String(init.body))
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }))
     }) as unknown as typeof fetch
-  const attacksOf = (p: string) => ATTACKS.map((a) => ({ ...a, name: `${a.name} ${p}` }))
-  const openingAnswer = { title: 'Titolo', nicknames: ['Primo', 'Secondo'], events: ['Il trenino travolge tutti'], attacks: [attacksOf('0'), attacksOf('1')] }
+  const openingAnswer = { title: 'Titolo', nicknames: ['Primo', 'Secondo'], events: ['Il trenino travolge tutti'] }
   const roundAnswer = (over: object = {}) => ({
-    used: [1, 0],
+    moves: [
+      { name: 'Mossa Zero', text: 'fa zero', source: 'weapon' },
+      { name: 'Mossa Uno', text: 'fa uno', source: 'power' },
+    ],
     twist: null,
     scene: 'Il primo inciampa, il secondo ne approfitta.',
     hits: [2, 0],
@@ -475,11 +431,6 @@ describe('server', () => {
     summary: 'Primo round epico',
     ...over,
   })
-  const chosen = (): [[Attack, Attack], [Attack, Attack]] => [
-    [attacksOf('G')[0], attacksOf('G')[2]],
-    [attacksOf('M')[3], attacksOf('M')[4]],
-  ]
-
   it('rimette a posto tutte le coppie se ha invertito l’ordine', async () => {
     const f = fighters()
     const o = await generateOpening(f, ARENAS[0], true, [2, 5], { apiKey: 'k', fetch: groqAnswer(openingAnswer) })
@@ -487,30 +438,32 @@ describe('server', () => {
     const sent = lastSent.messages[1].content
     expect(sent.indexOf(f[1].monster.character.desc)).toBeLessThan(sent.indexOf(f[0].monster.character.desc))
     expect(sent).toContain('ai round 2 e 5')
-    expect(sent).toContain('ESATTAMENTE 5 attacchi')
     expect(o.nicknames).toEqual(['Secondo', 'Primo'])
-    expect(o.attacks[0][0].name).toBe('Carica 1')
     expect(o.events).toEqual([
       { round: 2, text: 'Il trenino travolge tutti' },
       { round: 5, text: expect.any(String) },
     ])
 
-    const j = await generateRound(f, ARENAS[0], true, o, START, [], chosen(), o.events[0], { apiKey: 'k', fetch: groqAnswer(roundAnswer()) })
-    // Per l'AI Marco è lo 0: "hits 2", "winner 1" e "used" vanno girati.
+    const j = await generateRound(f, ARENAS[0], true, o, START, [], o.events[0], { apiKey: 'k', fetch: groqAnswer(roundAnswer()) })
+    // Per l'AI Marco è lo 0: "hits 2", "winner 1" e le mosse vanno girati.
     expect(j.hits).toEqual([0, 2])
     expect(j.winner).toBe(0)
-    expect(j.used).toEqual([0, 1])
+    expect(j.moves.map((m) => m.name)).toEqual(['Mossa Uno', 'Mossa Zero'])
     expect(j.stamps).toEqual(['GENIALE', 'MAH'])
     const prompt = lastSent.messages[1].content
-    expect(prompt).toMatch(/\(COMBATTENTE 0\) ha scelto:\n\s+0\. «Potere M»/)
-    expect(prompt).toMatch(/\(COMBATTENTE 1\) ha scelto:\n\s+0\. «Carica G»/)
+    // L'AI inventa le mosse: per Marco (che vede come 0) contro Giulia, e viceversa.
+    expect(prompt).toContain(`per ${f[1].monster.character.name} una mossa nata da una sua carta e studiata contro ${f[0].monster.character.name}`)
     expect(prompt).toContain('Il trenino travolge tutti')
+    expect(prompt).toContain('È il primo round')
   })
 
-  it('un pari resta pari anche con l’ordine invertito, e dopo un colpo di scena non se ne chiede un altro', async () => {
-    const j = await generateRound(fighters(), ARENAS[0], true, { title: 'T' }, START, [], chosen(), undefined, { apiKey: 'k', fetch: groqAnswer(roundAnswer({ winner: null, hits: [1, 1] })) }, true)
+  it('un pari resta pari anche con l’ordine invertito; dopo un colpo di scena non se ne chiede un altro; le mosse già fatte sono vietate', async () => {
+    const j = await generateRound(fighters(), ARENAS[0], true, { title: 'T' }, { hp: [80, 80], round: 2 }, ['round 1'], undefined, { apiKey: 'k', fetch: groqAnswer(roundAnswer({ winner: null, hits: [1, 1] })) }, true, ['Ciabattata', 'Pizzicotto'])
     expect(j.winner).toBeNull()
-    expect(lastSent.messages[1].content).toContain('NIENTE colpo di scena')
+    const prompt = lastSent.messages[1].content
+    expect(prompt).toContain('NIENTE colpo di scena')
+    expect(prompt).toContain('MOSSE GIÀ FATTE (vietato rifarle, anche con un altro nome): «Ciabattata» «Pizzicotto»')
+    expect(prompt).toContain('Non la carta usata nel round prima')
   })
 
   it('se il modello grande ha finito i token al minuto ripiega su quello piccolo', async () => {
@@ -540,41 +493,44 @@ describe('server', () => {
     expect((await handleBattleRequest('{}', {})).status).toBe(503)
     const bad = { stage: 'opening', arena: ARENAS[0].id, fighters: [{ character: 'c-inventato' }, {}] }
     expect((await handleBattleRequest(JSON.stringify(bad), { apiKey: 'k' })).status).toBe(400)
-    expect((await handleBattleRequest(JSON.stringify({ stage: 'round', token: 'abc.def', picks: [[0, 1], [0, 1]] }), { apiKey: 'k' })).status).toBe(400)
+    expect((await handleBattleRequest(JSON.stringify({ stage: 'round', token: 'abc.def' }), { apiKey: 'k' })).status).toBe(400)
   })
 
-  it('endpoint: gli attacchi scelti entrano nel token al primo round e l’AI decide quale si usa', async () => {
+  it('endpoint: le mosse le inventa l’AI round per round, e il token ricorda quelle già fatte', async () => {
     const s = draftRound(createMatch(['Giulia', 'Marco'], 1, 3))
     const cfg = { apiKey: 'k', rand: () => 0.9, fetch: groqAnswer(openingAnswer) }
     const open = (await handleBattleRequest(JSON.stringify({ stage: 'opening', ...battleRequest(s) }), cfg)).body as { token: string }
     const roundCfg = { ...cfg, fetch: groqAnswer(roundAnswer({ twist: 'Il koala crolla dal sonno' })) }
-    const round = async (token: string, picks?: unknown) => {
-      const r = await handleBattleRequest(JSON.stringify({ stage: 'round', token, picks }), roundCfg)
+    const round = async (token: string) => {
+      const r = await handleBattleRequest(JSON.stringify({ stage: 'round', token }), roundCfg)
       return { status: r.status, body: r.body as { token: string; round: { hp: number[]; moveNames: string[]; actions: string[]; twist: string | null } } }
     }
-    // Scelte sbagliate o mancanti al primo round: rifiutate.
-    expect((await round(open.token, [[0, 7], [0, 1]])).status).toBe(400)
-    expect((await round(open.token)).status).toBe(400)
-    const r1 = await round(open.token, [[1, 2], [3, 4]])
+    const r1 = await round(open.token)
     expect(r1.status).toBe(200)
-    // L'AI ha scelto l'attacco 1 di Giulia (il secondo dei suoi) e lo 0 di Marco; rand 0.9 = ordine non invertito.
-    expect(r1.body.round.moveNames).toEqual(['Finta 0', 'Potere 1'])
-    expect(r1.body.round.actions[0]).toBe('Fa una finta')
+    // rand 0.9 = ordine non invertito: le mosse arrivano come le ha scritte l'AI.
+    expect(r1.body.round.moveNames).toEqual(['Mossa Zero', 'Mossa Uno'])
+    expect(r1.body.round.actions).toEqual(['fa zero', 'fa uno'])
     expect(r1.body.round.twist).toBe('Il koala crolla dal sonno')
     expect(r1.body.round.hp.some((h) => h < 100)).toBe(true)
-    // Dal secondo round le scelte vengono dal token: quelle mandate si ignorano.
-    const r2 = await round(r1.body.token, [[0, 0], [0, 0]])
+    const r2 = await round(r1.body.token)
     expect(r2.status).toBe(200)
-    expect(r2.body.round.moveNames).toEqual(['Finta 0', 'Potere 1'])
     // Niente due colpi di scena di fila, anche se l'AI insiste.
     expect(r2.body.round.twist).toBeNull()
-    // L'AI ricorda il round precedente e vede i 2 attacchi di ciascuno.
+    // L'AI ricorda il round precedente e le mosse già fatte.
     const prompt = lastSent.messages[1].content
     expect(prompt).toContain('Primo round epico')
-    expect(prompt).toContain('«Legnata 0»')
-    expect(prompt).toContain('«Pazzia 1»')
-    expect(prompt).not.toContain('«Carica 0»')
+    expect(prompt).toContain('MOSSE GIÀ FATTE (vietato rifarle, anche con un altro nome): «Mossa Zero» «Mossa Uno»')
     expect(prompt).toContain('NIENTE colpo di scena')
+    // …e da quali carte sono nate: stavolta altre (rand 0.9 = ordine non invertito).
+    expect(prompt).toContain(`${s.monsters[0]!.character.name} ha usato l’arma e ${s.monsters[1]!.character.name} il superpotere: stavolta OBBLIGATORIO`)
+    // Un round finito non si rigioca.
+    let t = r2.body.token
+    for (let i = 0; i < MAX_ROUNDS; i++) {
+      const r = await round(t)
+      if (r.status !== 200) break
+      t = r.body.token
+    }
+    expect((await round(t)).status).toBe(400)
   })
 })
 

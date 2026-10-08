@@ -31,13 +31,13 @@ export interface FighterIds {
 
 export const other = (s: Side): Side => (s === 0 ? 1 : 0)
 
-// ---------- attacchi ----------
+// ---------- mosse ----------
 
 /**
- * Prima della rissa l'AI prepara 5 attacchi per mostro, uno per carta più
- * un'idea folle; ognuno ne sceglie 2 in segreto. Poi la rissa va da sola: a
- * ogni round l'AI decide quale dei due usa ciascuno, racconta e giudica.
- * Il tipo non si mostra ai giocatori: serve al narratore di riserva.
+ * La rissa va da sola: a ogni round l'AI inventa per ciascun mostro una mossa
+ * nuova, nata da una delle sue carte e pensata contro il mostro avversario,
+ * poi racconta e giudica. I giocatori guardano.
+ * Il tipo serve solo al narratore di riserva:
  * - aggressiva: attacco diretto;
  * - furba: trucco, finta, trappola, difesa;
  * - pazza: idea assurda e rischiosa.
@@ -45,37 +45,24 @@ export const other = (s: Side): Side => (s === 0 ? 1 : 0)
 export type Tone = 'aggressiva' | 'furba' | 'pazza'
 export const TONES: readonly Tone[] = ['aggressiva', 'furba', 'pazza']
 
-export const ATTACKS_PER_FIGHTER = 5
-export const ATTACKS_TO_PICK = 2
-/** Da cosa nasce ciascuno dei 5 attacchi, nell'ordine. */
-export const ATTACK_SOURCES = ['il personaggio', 'l’arma', 'la personalità', 'il superpotere', 'un’idea folle e rischiosa'] as const
-/** Il tipo di ciascuno dei 5 attacchi, nell'ordine. */
-export const ATTACK_TONES: readonly Tone[] = ['aggressiva', 'aggressiva', 'furba', 'pazza', 'pazza']
+/** La carta da cui nasce una mossa. */
+export type MoveSource = keyof Monster
+export const MOVE_SOURCES: readonly MoveSource[] = ['character', 'weapon', 'personality', 'power']
+export const isMoveSource = (v: unknown): v is MoveSource => MOVE_SOURCES.includes(v as MoveSource)
 
-export interface Attack {
+export interface Move {
   /** Nome da urlare, max 4 parole. */
   name: string
   /** Cosa fa, una frase. */
   text: string
-  tone: Tone
+  source: MoveSource
 }
 
-/** La carta da cui nasce l'attacco k dei 5 (l'idea folle nasce dal personaggio). */
-export const attackSlot = (k: number): keyof Monster => (['character', 'weapon', 'personality', 'power'] as const)[k] ?? 'character'
+/** Il tipo di una mossa, dalla carta da cui nasce (per il narratore di riserva). */
+export const TONE_OF: Record<MoveSource, Tone> = { character: 'aggressiva', weapon: 'aggressiva', personality: 'furba', power: 'pazza' }
 
-/** Livello di rarità nascosto dell'attacco k di un mostro: comune 0 … leggendaria 3. */
-export const attackPower = (m: Monster, k: number): 0 | 1 | 2 | 3 => RARITY_LEVEL[m[attackSlot(k)].rarity]
-
-/** Gli indici dei 2 attacchi scelti tra i 5. */
-export type Picks = [number, number]
-
-/** Due indici distinti tra 0 e 4, in qualsiasi forma arrivino; altrimenti niente. */
-export function cleanPicks(v: unknown): Picks | undefined {
-  if (!Array.isArray(v) || v.length !== ATTACKS_TO_PICK) return undefined
-  const p = v.map((x) => Number(x))
-  if (!p.every((x) => Number.isInteger(x) && x >= 0 && x < ATTACKS_PER_FIGHTER) || p[0] === p[1]) return undefined
-  return [p[0], p[1]]
-}
+/** Livello di rarità nascosto della carta da cui nasce la mossa: comune 0 … leggendaria 3. */
+export const movePower = (m: Monster, source: MoveSource): 0 | 1 | 2 | 3 => RARITY_LEVEL[m[source].rarity]
 
 // ---------- eventi dell'arena ----------
 
@@ -98,8 +85,6 @@ export interface Opening {
   intro: string
   nicknames: [string, string]
   events: ArenaEvent[]
-  /** I 5 attacchi di ciascun mostro. */
-  attacks: [Attack[], Attack[]]
   source: 'ai' | 'offline'
 }
 
@@ -138,9 +123,9 @@ export interface Judgement {
   twist: string | null
 }
 
-/** Il verdetto dell'AI con in più quale dei 2 attacchi scelti usa ciascuno (0 o 1). */
+/** Il verdetto dell'AI con in più le due mosse che ha inventato per questo round. */
 export interface AiRound extends Judgement {
-  used: [0 | 1, 0 | 1]
+  moves: [Move, Move]
 }
 
 // ---------- regole ----------
@@ -335,38 +320,21 @@ const clampInt = <T extends number>(v: unknown, max: number, fallback: T): T => 
   return (Number.isFinite(n) ? Math.min(max, Math.max(0, n)) : fallback) as T
 }
 
-const isTone = (v: unknown): v is Tone => TONES.includes(v as Tone)
-
-/**
- * I 5 attacchi di un mostro, nell'ordine delle carte. Quello che manca o non
- * va si prende dagli attacchi di riserva, stesso posto.
- */
-export function normalizeAttacks(raw: unknown, backup: Attack[]): Attack[] {
-  const list = (Array.isArray(raw) ? raw : []).map((x) => (typeof x === 'string' ? { text: x } : ((x ?? {}) as Record<string, unknown>)))
-  const seen = new Set<string>()
-  return backup.map((b, i) => {
-    const x = list[i]
-    const t = text(x?.text, 160)
-    const name = text(x?.name, 40)
-    if (!t || !name || seen.has(name.toLowerCase())) return b
-    seen.add(name.toLowerCase())
-    return { name, text: t, tone: isTone(x?.tone) ? x.tone : b.tone }
-  })
+/** Una mossa inventata dall'AI; se manca o non va, quella di riserva. */
+export function normalizeMove(raw: unknown, backup: Move): Move {
+  const x = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const t = text(x.text, 160)
+  const name = text(x.name, 40)
+  if (!t || !name) return backup
+  return { name, text: t, source: isMoveSource(x.source) ? x.source : backup.source }
 }
 
-export function normalizeOpening(
-  raw: unknown,
-  fighters: [Fighter, Fighter],
-  source: Opening['source'],
-  events: ArenaEvent[] = [],
-  backup: [Attack[], Attack[]] = [offlineAttacks(fighters, 0), offlineAttacks(fighters, 1)],
-): Opening | null {
+export function normalizeOpening(raw: unknown, fighters: [Fighter, Fighter], source: Opening['source'], events: ArenaEvent[] = []): Opening | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const title = text(r.title, 80)
   if (!title) return null
   const nick = pair(r.nicknames)
-  const attacks = pair(r.attacks)
   // Eventi: il calendario arriva dal server; dal telefono si accetta solo un formato pulito.
   const rawEvents = !events.length && Array.isArray(r.events) ? (r.events as ArenaEvent[]) : events
   return {
@@ -374,7 +342,6 @@ export function normalizeOpening(
     intro: text(r.intro, 400),
     nicknames: [text(nick[0], 40) || fighters[0].monster.character.name, text(nick[1], 40) || fighters[1].monster.character.name],
     events: rawEvents.filter((e) => e && Number.isInteger(e.round) && text(e.text, 220)).map((e) => ({ round: e.round, text: text(e.text, 220) })),
-    attacks: [normalizeAttacks(attacks[0], backup[0]), normalizeAttacks(attacks[1], backup[1])],
     source,
   }
 }
@@ -384,15 +351,16 @@ export const sideOf = (v: unknown): Side | null => (v === 0 || v === '0' ? 0 : v
 
 const isStamp = (v: unknown): v is Stamp => STAMPS.includes(String(v).toUpperCase() as Stamp)
 
-export function normalizeJudgement(raw: unknown): AiRound | null {
+export function normalizeJudgement(raw: unknown, backupMoves: [Move, Move]): AiRound | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const scene = text(r.scene, 900)
   if (!scene) return null
   const stamps = pair(r.stamps).map((s) => (isStamp(s) ? (String(s).toUpperCase() as Stamp) : 'CLASSICA')) as [Stamp, Stamp]
   const twist = text(r.twist, 260)
+  const moves = pair(r.moves)
   return {
-    used: pair(r.used).map((u) => (sideOf(u) === 1 ? 1 : 0)) as [0 | 1, 0 | 1],
+    moves: [normalizeMove(moves[0], backupMoves[0]), normalizeMove(moves[1], backupMoves[1])],
     stamps,
     hits: pair(r.hits).map((h) => clampInt<Hit>(h, 3, 1)) as [Hit, Hit],
     recover: pair(r.recover).map((h) => clampInt<Recover>(h, 2, 0)) as [Recover, Recover],
@@ -414,19 +382,19 @@ const EPITHETS = ['il Terribile', 'l’Inarrestabile', 'il Leggendario', 'il Dis
 /** Max 4 parole, come i nomi che chiediamo all'AI. */
 const shortName = (s: string) => s.split(' ').slice(0, 4).join(' ')
 
-/** I 5 attacchi di riserva, costruiti dalle carte: uno per carta più la pazzia. */
-export function offlineAttacks(fighters: [Fighter, Fighter], side: Side): Attack[] {
+/** La mossa di riserva per il round `roundNo` (da 1): gira tra le quattro carte, così non si ripete. */
+export function offlineMove(fighters: [Fighter, Fighter], side: Side, roundNo: number): Move {
   const me = fighters[side].monster
   const foe = fighters[other(side)].monster.character.name
   const weapon = lower(me.weapon.name)
   // Senza articoli: i nomi delle carte non dicono se sono maschili o femminili.
-  return [
-    { name: `Carica di ${shortName(me.character.name)}`, text: `Prende la rincorsa e travolge ${foe} con tutto il peso che ha`, tone: 'aggressiva' },
-    { name: `Colpo di ${shortName(weapon)}`, text: `Si lancia su ${foe} e lo tempesta a colpi di ${weapon}`, tone: 'aggressiva' },
-    { name: `Trucco ${shortName(lower(me.personality.name))}`, text: `Fa finta di inciampare, poi colpisce ${foe} alle spalle`, tone: 'furba' },
-    { name: shortName(me.power.name), text: `Scatena «${me.power.name}» contro ${foe}, senza pensarci due volte`, tone: 'pazza' },
-    { name: 'Pazzia totale', text: `Prova una cosa mai vista: «${me.power.name}» armato di ${weapon}, urlando`, tone: 'pazza' },
+  const all: Move[] = [
+    { name: `Carica di ${shortName(me.character.name)}`, text: `Prende la rincorsa e travolge ${foe} con tutto il peso che ha`, source: 'character' },
+    { name: `Colpo di ${shortName(weapon)}`, text: `Si lancia su ${foe} e lo tempesta a colpi di ${weapon}`, source: 'weapon' },
+    { name: `Trucco ${shortName(lower(me.personality.name))}`, text: `Fa finta di inciampare, poi colpisce ${foe} alle spalle`, source: 'personality' },
+    { name: shortName(me.power.name), text: `Scatena «${me.power.name}» contro ${foe}, senza pensarci due volte`, source: 'power' },
   ]
+  return all[(roundNo - 1 + side) % all.length]
 }
 
 export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: () => number = Math.random): Opening {
@@ -443,7 +411,6 @@ export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: 
     intro: `Signore e signori, benvenuti: ${where}. ${arena.desc} Che la rissa abbia inizio!`,
     nicknames: [`${name(fighters[0])} ${pick(EPITHETS)}`, `${name(fighters[1])} ${pick(EPITHETS)}`],
     events: scheduleEvents(rand).map((round, i) => ({ round, text: scenes[(i + Math.floor(rand() * 3)) % 3] })),
-    attacks: [offlineAttacks(fighters, 0), offlineAttacks(fighters, 1)],
     source: 'offline',
   }
 }
@@ -451,10 +418,10 @@ export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: 
 /** Chi batte chi, nel narratore di riserva: la furbata punisce chi carica, la carica travolge la pazzia, la pazzia spiazza la furbata. */
 const BEATS: Record<Tone, Tone> = { furba: 'aggressiva', aggressiva: 'pazza', pazza: 'furba' }
 
-/** Verdetto di riserva, senza AI, sui due attacchi usati in questo round. */
-export function offlineJudgement(fighters: [Fighter, Fighter], used: [Attack, Attack], rand: () => number = Math.random): Judgement {
+/** Verdetto di riserva, senza AI, sulle due mosse di questo round. */
+export function offlineJudgement(fighters: [Fighter, Fighter], used: [Move, Move], rand: () => number = Math.random): Judgement {
   const names = fighters.map((f) => f.monster.character.name) as [string, string]
-  const t: [Tone, Tone] = [used[0].tone, used[1].tone]
+  const t: [Tone, Tone] = [TONE_OF[used[0].source], TONE_OF[used[1].source]]
   let winner: Side | null = null
   if (BEATS[t[0]] === t[1]) winner = 0
   else if (BEATS[t[1]] === t[0]) winner = 1

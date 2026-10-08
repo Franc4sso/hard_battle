@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { ATTACKS_TO_PICK, GOOD_STAMPS, HIT_LABEL, MAX_HP, hpState, mvpOf, type Monster, type Picks, type RoundResult, type Side, type Stamp } from '../../../shared/battle'
+import { GOOD_STAMPS, HIT_LABEL, MAX_HP, hpState, mvpOf, type Monster, type RoundResult, type Side, type Stamp } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
-import { matchWinner, nextChooser, other, type MatchState } from '../../game/match'
+import { matchWinner, other, type MatchState } from '../../game/match'
 import type { Rarity } from '../../../shared/rarity'
 import { Button, Footer, HpBar, PLAYER_COLORS, PLAYER_TEXT, Portrait, RarityTag, anim } from '../components'
 import type { ScreenProps } from './Draft'
@@ -92,7 +92,7 @@ export function VersusScreen(props: ScreenProps) {
             dispatch({ type: 'fight' })
           }}
         >
-          SCEGLIETE GLI ATTACCHI
+          COMBATTETE!
         </Button>
       </Footer>
     </div>
@@ -120,105 +120,6 @@ function Waiting({ what = 'VS' }: { what?: string }) {
       <p key={i} className="panel a-pop text-lg font-extrabold" style={anim(0, i % 2 ? 1.5 : -1.5)}>
         {WAITING[i % WAITING.length]}
       </p>
-    </div>
-  )
-}
-
-// ---------- scelta degli attacchi ----------
-
-/** Ognuno sceglie 2 dei suoi 5 attacchi di nascosto, passandosi il telefono. Poi la rissa va da sola. */
-export function AttacksScreen(props: ScreenProps) {
-  const { state, dispatch } = props
-  useOpening(props)
-  const who = nextChooser(state)
-  const [covered, setCovered] = useState(true)
-  const [selected, setSelected] = useState<number[]>([])
-  const opening = state.fight.opening
-  if (!opening) return <Waiting />
-  if (who === undefined) return null
-  const me = state.players[who].name
-  const them = state.players[other(who)].name
-  const m = state.monsters[who] as Monster
-  const ready = selected.length === ATTACKS_TO_PICK
-
-  if (covered)
-    return (
-      <div key={`cover-${who}`} className="screen items-center justify-center gap-4 text-center">
-        <span className="label">Passa il telefono a</span>
-        <h2 className="title-comic a-slam text-[64px] break-all" style={{ ...anim(0.1, -3), color: PLAYER_COLORS[who] }}>
-          {me.toUpperCase()}
-        </h2>
-        <p className="panel a-rise max-w-[320px] text-[15px] leading-snug font-medium" style={anim(0.25, 1)}>
-          Scegli di nascosto {ATTACKS_TO_PICK} dei {opening.attacks[who].length} attacchi del tuo mostro. <b>{them}</b>, non guardare!
-        </p>
-        <div className="mt-auto w-full">
-          <Button
-            onClick={() => {
-              play('pass')
-              setCovered(false)
-            }}
-          >
-            SONO {me.toUpperCase()}
-          </Button>
-        </div>
-      </div>
-    )
-
-  const toggle = (i: number) => {
-    play('select')
-    vibrate(10)
-    setSelected((cur) => (cur.includes(i) ? cur.filter((x) => x !== i) : cur.length < ATTACKS_TO_PICK ? [...cur, i] : [cur[1], i]))
-  }
-  const submit = () => {
-    if (!ready) return
-    play('pick')
-    vibrate(25)
-    dispatch({ type: 'pickAttacks', side: who, picks: [selected[0], selected[1]] as Picks })
-    setSelected([])
-    setCovered(true)
-  }
-
-  return (
-    <div className="screen">
-      <div className="flex items-center gap-3">
-        <Portrait monster={m} size="md" className="a-pop" />
-        <div className="flex min-w-0 flex-col">
-          <span className="label" style={{ color: PLAYER_TEXT[who] }}>
-            {me}
-          </span>
-          <h2 className="title-comic a-slam text-[30px]" style={anim(0, -2)}>
-            I TUOI ATTACCHI
-          </h2>
-          <span className="text-[13px] leading-snug font-bold">Scegline {ATTACKS_TO_PICK}. Poi la rissa va da sola.</span>
-        </div>
-      </div>
-      <div className="flex flex-col gap-2.5">
-        {opening.attacks[who].map((a, i) => {
-          const on = selected.includes(i)
-          return (
-            <div key={i} className="a-rise" style={anim(0.08 + i * 0.06)}>
-              <button
-                type="button"
-                className="choice flex-col items-start gap-1 py-2.5"
-                aria-pressed={on}
-                style={{ transform: `rotate(${[-0.6, 0.5, -0.4, 0.6, -0.5][i]}deg) scale(${on ? 1.02 : 1})` }}
-                onClick={() => toggle(i)}
-              >
-                <span className="flex w-full items-center justify-between gap-2">
-                  <b className="comic text-[22px] leading-none">{a.name}</b>
-                  {on && <span className="comic rounded-md bg-ink px-2 text-[14px] text-sun">SCELTO</span>}
-                </span>
-                <span className="text-[13.5px] leading-snug font-medium">{a.text}</span>
-              </button>
-            </div>
-          )
-        })}
-      </div>
-      <Footer>
-        <Button disabled={!ready} onClick={submit}>
-          {ready ? 'FATTO. NASCONDI!' : `SCEGLINE ${ATTACKS_TO_PICK - selected.length}`}
-        </Button>
-      </Footer>
     </div>
   )
 }
@@ -440,7 +341,6 @@ export function BattleScreen(props: ScreenProps) {
 
   const shownRound = viewing !== null && viewing >= 0 ? rounds[viewing] : undefined
   const hp: [number, number] = shownRound ? shownRound.hp : viewing === -1 ? [MAX_HP, MAX_HP] : state.fight.fs.hp
-  const picked = (s: Side) => (state.fight.picks[s] ?? []).map((k) => opening.attacks[s][k].name)
 
   return (
     <div className="screen">
@@ -457,23 +357,11 @@ export function BattleScreen(props: ScreenProps) {
                 {opening.intro}
               </div>
             )}
-            <div className="grid grid-cols-2 gap-2">
-              {([0, 1] as Side[]).map((s) => (
-                <div key={s} className="panel a-rise flex flex-col gap-1 px-3 py-2.5" style={{ ...anim(0.5 + s * 0.1, s ? 0.8 : -0.8), boxShadow: `4px 4px 0 ${PLAYER_COLORS[s]}` }}>
-                  <span className="label text-[10px]" style={{ color: PLAYER_TEXT[s] }}>
-                    {characterOf(state, s)}
-                  </span>
-                  {picked(s).map((n) => (
-                    <b key={n} className="comic text-[18px] leading-none">
-                      {n}
-                    </b>
-                  ))}
-                </div>
-              ))}
-            </div>
-            <p className="a-rise text-center text-[14px] leading-snug font-bold" style={anim(0.7)}>
-              Da qui in poi decide tutto il giudice: sceglie gli attacchi, racconta e giudica. Voi passate solo al round dopo. Si combatte finché qualcuno crolla.
-            </p>
+            <ul className="panel a-rise flex flex-col gap-1.5 px-3.5 py-3 text-[14px] leading-snug font-medium" style={anim(0.5)}>
+              <li>A ogni round il giudice inventa la mossa di ciascun mostro, dalle sue carte e contro il suo avversario.</li>
+              <li>Le due mosse avvengono nello stesso istante: racconta la scena e decide chi ha la meglio.</li>
+              <li>Voi passate solo al round dopo. Si combatte finché qualcuno crolla.</li>
+            </ul>
             {opening.source === 'offline' && (
               <p className="a-rise text-center text-[13px] font-bold" style={anim(0.8)}>
                 AI non raggiungibile: stasera racconta il narratore di riserva.

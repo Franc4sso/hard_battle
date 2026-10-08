@@ -1,16 +1,16 @@
 import {
-  attackPower,
+  movePower,
   normalizeOpening,
   offlineJudgement,
+  offlineMove,
   offlineOpening,
   playRound,
-  type Attack,
   type FightState,
   type Fighter,
   type Monster,
+  type Move,
   type Moves,
   type Opening,
-  type Picks,
   type RoundResult,
 } from '../../shared/battle'
 import { battleRequest, currentEvent, type MatchState } from './match'
@@ -52,8 +52,8 @@ export const fightersOf = (s: MatchState): [Fighter, Fighter] => {
 }
 
 /**
- * Presentazione e i 5 attacchi di ciascuno. Parte appena si apre il VS, così
- * quando si passa alla scelta è già pronta. Senza AI li prepara il narratore di riserva.
+ * Presentazione della rissa. Parte appena si apre il VS, così quando si preme
+ * COMBATTETE è già pronta. Senza AI la prepara il narratore di riserva.
  */
 export function requestOpening(s: MatchState): Promise<{ opening: Opening; token: string | null }> {
   return once(`${s.seed}-${s.round}-open`, async () => {
@@ -72,26 +72,23 @@ function isRound(v: unknown): v is RoundResult {
 type RoundOut = { round: RoundResult; next: FightState; token: string | null }
 
 /**
- * Un round: lo gioca il server con l'AI, che sceglie quale dei 2 attacchi usa
- * ciascuno, e rimanda lo stato firmato. Se l'AI non risponde, il round lo gioca
- * il narratore di riserva e la rissa prosegue offline.
+ * Un round: lo gioca il server con l'AI, che inventa la mossa di ciascuno, e
+ * rimanda lo stato firmato. Se l'AI non risponde, il round lo gioca il
+ * narratore di riserva e la rissa prosegue offline.
  */
 export function requestRound(s: MatchState): Promise<RoundOut> {
   const f = s.fight
-  const picks = f.picks as [Picks, Picks]
   return once(`${s.seed}-${s.round}-r${f.rounds.length}`, async () => {
-    const body = f.token ? await post({ stage: 'round', token: f.token, picks }) : null
+    const body = f.token ? await post({ stage: 'round', token: f.token }) : null
     const next = body?.next as FightState | undefined
     if (body && isRound(body.round) && next && Array.isArray(next.hp) && typeof body.token === 'string') return { round: body.round, next, token: body.token }
     const fighters = fightersOf(s)
-    const opening = f.opening as Opening
-    // Senza AI si alternano i due attacchi, partendo da uno a caso.
-    const which = [0, 1].map((side) => picks[side][(f.rounds.length + side + (s.seed % 2)) % 2])
-    const used = [0, 1].map((side) => opening.attacks[side][which[side]]) as [Attack, Attack]
+    const roundNo = f.rounds.length + 1
+    const used: [Move, Move] = [offlineMove(fighters, 0, roundNo), offlineMove(fighters, 1, roundNo)]
     const moves: Moves = { names: [used[0].name, used[1].name], actions: [used[0].text, used[1].text] }
     const judgement = offlineJudgement(fighters, used, Math.random)
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]
-    const power: [number, number] = [attackPower(fighters[0].monster, which[0]), attackPower(fighters[1].monster, which[1])]
+    const power: [number, number] = [movePower(fighters[0].monster, used[0].source), movePower(fighters[1].monster, used[1].source)]
     const out = playRound(f.fs, moves, judgement, names, Math.random, currentEvent(s), power)
     return { ...out, token: null }
   })

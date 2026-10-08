@@ -1,21 +1,18 @@
 import type { Card } from '../shared/cards'
 import {
-  ATTACKS_PER_FIGHTER,
-  ATTACK_SOURCES,
-  ATTACK_TONES,
   LAST_BREATH,
   MAX_HP,
   STAMPS,
   hpState,
   normalizeJudgement,
   normalizeOpening,
-  offlineAttacks,
+  offlineMove,
   sideOf,
   type AiRound,
   type ArenaEvent,
-  type Attack,
   type FightState,
   type Fighter,
+  type MoveSource,
   type Opening,
 } from '../shared/battle'
 
@@ -35,10 +32,16 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 export const DEFAULT_MODEL = 'openai/gpt-oss-120b'
 export const FALLBACK_MODEL = 'openai/gpt-oss-20b'
 
-export const SYSTEM_PROMPT = `Sei il narratore e il GIUDICE di RISSA ASSURDA, un party game: due giocatori costruiscono un mostro assurdo ciascuno e lo fanno combattere. Prima della rissa ognuno ha scelto IN SEGRETO 2 attacchi del suo mostro. Poi la rissa va da sola, round dopo round: a ogni round decidi tu quale dei suoi 2 attacchi usa ciascuno, le due azioni avvengono NELLO STESSO ISTANTE, tu racconti cosa succede e decidi chi ha la meglio. Scrivi in italiano.
+export const SYSTEM_PROMPT = `Sei il regista, il narratore e il GIUDICE di RISSA ASSURDA, un party game: due giocatori costruiscono un mostro assurdo ciascuno e lo guardano combattere. La rissa va da sola, round dopo round: a ogni round INVENTI TU la mossa di ciascun mostro, nata dalle sue carte e pensata contro l'avversario; le due mosse avvengono NELLO STESSO ISTANTE, tu racconti cosa succede e decidi chi ha la meglio. Scrivi in italiano.
+
+COME INVENTI LE MOSSE
+- Ogni mossa nasce da una carta precisa del mostro (personaggio, arma, personalità o superpotere) e la sfrutta in modo visivo e sorprendente. Varia la carta da un round all'altro.
+- Ogni mossa è pensata CONTRO QUEL PRECISO AVVERSARIO: colpisce un suo punto debole (la sua carta trappola, la sua personalità, la sua taglia, la sua arma, la sua storia), oppure risponde a quello che ha fatto nel round prima.
+- Mai la stessa idea due volte in una rissa: niente mosse già fatte, niente stesso trucco con un altro nome. Ogni round porta un'idea nuova, più la rissa va avanti più le mosse diventano disperate e spettacolari.
+- Il nome della mossa è da urlare, buffo, max 4 parole. La frase è un'azione concreta che si vede, max 20 parole, al presente, senza soggetto.
 
 COME GIUDICI, in quest'ordine di importanza
-1. Come si incrociano i due attacchi. Ragiona con la fisica da cartone animato: chi arriva prima, chi resta scoperto, cosa blocca cosa, cosa si ritorce contro chi. Un trucco, una finta o un'attesa puniscono chi carica a testa bassa. Un attacco diretto travolge chi perde tempo (preparativi, pause, chiacchiere, idee lente). Un'idea pazza spiazza chi sta aspettando la mossa prevedibile. L'acqua spegne il fuoco, l'elettricità nell'acqua fa male a chi è bagnato, il grosso schiaccia il piccolo ma il piccolo è più veloce, e così via.
+1. Come si incrociano le due mosse. Ragiona con la fisica da cartone animato: chi arriva prima, chi resta scoperto, cosa blocca cosa, cosa si ritorce contro chi. Un trucco, una finta o un'attesa puniscono chi carica a testa bassa. Un attacco diretto travolge chi perde tempo (preparativi, pause, chiacchiere, idee lente). Un'idea pazza spiazza chi sta aspettando la mossa prevedibile. L'acqua spegne il fuoco, l'elettricità nell'acqua fa male a chi è bagnato, il grosso schiaccia il piccolo ma il piccolo è più veloce, e così via.
 2. Coerenza col mostro: un attacco che sfrutta bene personaggio, arma, personalità o superpotere funziona meglio. Una CARTA TRAPPOLA è un difetto vero: gli attacchi che la usano rischiano di fallire.
 3. La situazione: chi è all'ultimo respiro e tenta il tutto per tutto può ribaltare la rissa, un colpo su chi barcolla è pericolosissimo. L'arena e i suoi eventi partecipano.
 4. Creatività: un'idea geniale e divertente vale più di una banale.
@@ -75,21 +78,18 @@ function describe(f: Fighter, i: number): string {
 const setup = (f: [Fighter, Fighter], arena: Card) => `ARENA: ${arena.name}. ${arena.desc}\n\n${describe(f[0], 0)}\n\n${describe(f[1], 1)}`
 
 export function openingPrompt(f: [Fighter, Fighter], arena: Card, eventRounds: number[]): string {
-  const sources = ATTACK_SOURCES.map((s, i) => `${i + 1}. da ${s} (tipo "${ATTACK_TONES[i]}")`).join('; ')
   return `${setup(f, arena)}
 
 PRESENTAZIONE DELLA RISSA. Scrivi:
 - "title": il titolo dell'incontro come un film, max 50 caratteri.
-- "intro": il presentatore apre l'incontro descrivendo l'arena, 1-2 frasi.
+- "intro": il presentatore apre l'incontro descrivendo l'arena e i due mostri, 2-3 frasi.
 - "nicknames": un soprannome epico e buffo per ciascun combattente, nell'ordine 0 e 1, max 4 parole (es. "Il Flagello di IKEA").
 - "events": l'arena interverrà con un colpo di scena ai round ${eventRounds.join(' e ')}. Per ciascuno, nell'ordine, 1 frase (max 25 parole) che racconta cosa succede, usando oggetti, persone o fenomeni tipici di quest'arena. Deve cambiare la situazione per entrambi (es. il pavimento diventa scivoloso, piove dal soffitto, entra un animale).
-- "attacks": per ciascun combattente, nell'ordine 0 e 1, ESATTAMENTE ${ATTACKS_PER_FIGHTER} attacchi, in quest'ordine: ${sources}.
-  Ogni attacco ha "name" (un nome da urlare, max 4 parole, divertente, es. "Ciabattata Transoceanica") e "text" (cosa fa: una frase di max 16 parole, al presente, senza soggetto, azione concreta e visiva contro l'avversario). I 5 attacchi devono essere davvero diversi tra loro e nessuno deve sembrare il più forte: i giocatori li scelgono a sentimento. "tone" è il tipo indicato.
-  Forma di ogni attacco: {"name":"...","text":"...","tone":"aggressiva"}.
-Forma: {"title":"...","intro":"...","nicknames":["...","..."],"events":["...","..."],"attacks":[[{"name":"...","text":"...","tone":"aggressiva"},…5…],[…5…]]}`
+Forma: {"title":"...","intro":"...","nicknames":["...","..."],"events":["...","..."]}`
 }
 
-const attackLine = (a: Attack, k: number) => `  ${k}. «${a.name}»: ${a.text}`
+/** Il nome della carta come lo deve scrivere l'AI nel campo "source". */
+const SOURCE_HINT = '"character" (personaggio), "weapon" (arma), "personality" (personalità) o "power" (superpotere)'
 
 export function roundPrompt(
   f: [Fighter, Fighter],
@@ -97,42 +97,47 @@ export function roundPrompt(
   opening: Pick<Opening, 'title'>,
   fs: FightState,
   log: string[],
-  /** I 2 attacchi scelti da ciascuno. */
-  attacks: [[Attack, Attack], [Attack, Attack]],
   event?: ArenaEvent,
   /** Il round prima c'è stato un colpo di scena: questo no. */
   lastTwist = false,
+  /** I nomi delle mosse già fatte in questa rissa: non si ripetono. */
+  used: string[] = [],
+  /** La carta usata da ciascuno nel round prima: stavolta un'altra. */
+  lastSources?: [MoveSource, MoveSource],
 ): string {
   const names: [string, string] = [f[0].monster.character.name, f[1].monster.character.name]
+  const SOURCE_NAME: Record<MoveSource, string> = { character: 'il personaggio', weapon: 'l’arma', personality: 'la personalità', power: 'il superpotere' }
+  const vary = lastSources
+    ? `Nel round prima ${names[0]} ha usato ${SOURCE_NAME[lastSources[0]]} e ${names[1]} ${SOURCE_NAME[lastSources[1]]}: stavolta OBBLIGATORIO partire da un'altra carta per ciascuno.`
+    : 'Non la carta usata nel round prima, se possibile: varia.'
   const story = log.length ? log.map((s) => `- ${s}`).join('\n') : '- (è il primo round)'
   const life = ([0, 1] as const).map((i) => `${names[i]} ${fs.hp[i]}/${MAX_HP} (${hpState(fs.hp[i]).label.toLowerCase()})`).join(', ')
   const lastBreath = ([0, 1] as const).filter((i) => fs.hp[i] <= LAST_BREATH).map((i) => names[i])
-  const picks = ([0, 1] as const).map((i) => `${names[i]} (COMBATTENTE ${i}) ha scelto:\n${attacks[i].map(attackLine).join('\n')}`).join('\n')
+  const roundNo = fs.round + 1
   return `${setup(f, arena)}
 
 TITOLO: "${opening.title}". FINORA:
 ${story}
-
-ROUND ${fs.round + 1}. Vita all'inizio del round (segreta, non citare numeri): ${life}. Sotto ${LAST_BREATH} si è all'ultimo respiro.${
+${used.length ? `MOSSE GIÀ FATTE (vietato rifarle, anche con un altro nome): ${used.map((x) => `«${x}»`).join(' ')}\n` : ''}
+ROUND ${roundNo}. Vita all'inizio del round (segreta, non citare numeri): ${life}. Sotto ${LAST_BREATH} si è all'ultimo respiro.${
     lastBreath.length ? ` ${lastBreath.join(' e ')} è all'ultimo respiro: se l'avversario ha la meglio è il colpo finale, se invece ha la meglio chi è a terra è una rimonta da raccontare in grande.` : ''
   }${event ? `\nL'ARENA INTERVIENE IN QUESTO ROUND: ${event.text} Fallo pesare nella scena, per entrambi.` : ''}
 
-GLI ATTACCHI A DISPOSIZIONE (ognuno ne ha 2, scelti prima della rissa):
-${picks}
-
-Il tuo compito, da regista, giudice e narratore. Prima decidi quale dei suoi 2 attacchi usa ciascuno in questo round: alterna, non ripetere sempre lo stesso, e scegli quello che ha più senso in questa situazione (vita, arena, quello che è appena successo). Poi immagina la scena istante per istante: cosa fa ciascuno, dove si incrociano gli attacchi, chi arriva prima, cosa va storto. Poi scrivi:
-- "used": per ciascun combattente, nell'ordine 0 e 1, l'indice dell'attacco usato: 0 o 1.
+Il tuo compito, da regista, giudice e narratore. PRIMA inventa la mossa di ciascuno per questo round, come se fossi lo sceneggiatore di entrambi: per ${names[0]} una mossa nata da una sua carta e studiata contro ${names[1]} (le sue carte, la sua trappola, la sua indole, quello che ha appena fatto); per ${names[1]} lo stesso contro ${names[0]}. ${
+    roundNo === 1 ? 'È il primo round: mosse che presentano bene ciascun mostro, con la sua carta più caratteristica.' : vary
+  } Poi immagina la scena istante per istante: cosa fa ciascuno, dove si incrociano le mosse, chi arriva prima, cosa va storto. Poi scrivi:
+- "moves": le due mosse, nell'ordine 0 e 1, ciascuna {"name":"...","text":"...","source":...}: "name" da urlare, max 4 parole; "text" l'azione concreta, max 20 parole, al presente, senza soggetto; "source" la carta da cui nasce, una tra ${SOURCE_HINT}.
 - "twist": ${lastTwist ? 'in questo round NIENTE colpo di scena: scrivi null.' : 'ogni tanto (non a ogni round) un COLPO DI SCENA legato alle carte dei personaggi, non all\'arena: un difetto, una mania o un dettaglio delle loro descrizioni che irrompe nella rissa (es. il koala insonne crolla dal sonno a metà rincorsa, il permaloso si offende per uno sguardo). 1 frase, max 30 parole, e deve entrare nella scena. Altrimenti null.'}
-- "scene": la scena, 3-5 frasi. Prima cosa fa ciascuno, poi come si scontrano i due attacchi, poi l'esito concreto (chi vola dove, chi resta in piedi, in che stato). Chi legge deve capire esattamente cosa è successo e perché. Racconta solo gli attacchi usati.
+- "scene": la scena, 3-5 frasi. Prima cosa fa ciascuno, poi come si scontrano le due mosse, poi l'esito concreto (chi vola dove, chi resta in piedi, in che stato). Chi legge deve capire esattamente cosa è successo e perché.
 - "hits": quanto forte viene colpito ciascuno, nell'ordine 0 e 1: 0 niente, 1 di striscio, 2 colpo pieno, 3 devastante (solo se colto del tutto scoperto, o per un'idea eccellente). Possono essere colpiti entrambi.
-- "recover": quanto si rimette in sesto ciascuno, da 0 a 2: più di 0 solo se il suo attacco serviva a riprendersi e nessuno l'ha interrotto.
+- "recover": quanto si rimette in sesto ciascuno, da 0 a 2: più di 0 solo se la sua mossa serviva a riprendersi e nessuno l'ha interrotta.
 - "winner": 0 o 1, chi ha la meglio nel round, oppure null se è davvero pari. Deve combaciare con "hits": chi ha la meglio è colpito meno.
 - "why": IL GIUDICE spiega in 1-2 frasi chi ha la meglio e PERCHÉ, nominando il dettaglio decisivo (es. "Ha la meglio lo Squalo: il Nonno ha caricato a testa bassa proprio dentro la trappola di candeggina").
-- "stamps": il timbro per ciascun attacco usato, uno tra ${STAMPS.join(', ')}.
+- "stamps": il timbro per ciascuna mossa, uno tra ${STAMPS.join(', ')}.
 - "sfx": l'onomatopea più forte del round, in maiuscolo, max 14 caratteri.
 - "ko": due frasi finali spettacolari legate a questo round: la prima da usare SE crolla il combattente 0, la seconda SE crolla l'1.
-- "summary": 1 frase che ricordi il round nei prossimi, con il nome degli attacchi usati.
-Forma: {"used":[0,1],"twist":null,"scene":"...","hits":[1,2],"recover":[0,0],"winner":0,"why":"...","stamps":["FURBA","MAH"],"sfx":"...","ko":["...","..."],"summary":"..."}`
+- "summary": 1 frase che ricordi il round nei prossimi, con i nomi delle due mosse.
+Forma: {"moves":[{"name":"...","text":"...","source":"weapon"},{"name":"...","text":"...","source":"power"}],"twist":null,"scene":"...","hits":[1,2],"recover":[0,0],"winner":0,"why":"...","stamps":["FURBA","MAH"],"sfx":"...","ko":["...","..."],"summary":"..."}`
 }
 
 class RateLimitError extends Error {
@@ -225,7 +230,7 @@ const flipPairs = (raw: Record<string, unknown>, keys: string[]) => {
 export function generateOpening(fighters: [Fighter, Fighter], arena: Card, swap: boolean, eventRounds: number[], cfg: AiConfig): Promise<Opening> {
   return retry(async () => {
     const raw = await askGroq(openingPrompt(ordered(fighters, swap), arena, eventRounds), cfg)
-    if (swap) flipPairs(raw, ['nicknames', 'attacks'])
+    if (swap) flipPairs(raw, ['nicknames'])
     const texts = Array.isArray(raw.events) ? raw.events : []
     const events = eventRounds.map((round, i) => {
       const x = texts[i] as Record<string, unknown> | string | undefined
@@ -237,7 +242,6 @@ export function generateOpening(fighters: [Fighter, Fighter], arena: Card, swap:
       fighters,
       'ai',
       events.map((e, i) => ({ ...e, text: e.text || fallback[i % fallback.length] })),
-      [offlineAttacks(fighters, 0), offlineAttacks(fighters, 1)],
     )
   })
 }
@@ -257,20 +261,22 @@ export function generateRound(
   opening: Pick<Opening, 'title'>,
   fs: FightState,
   log: string[],
-  attacks: [[Attack, Attack], [Attack, Attack]],
   event: ArenaEvent | undefined,
   cfg: AiConfig,
   lastTwist = false,
+  used: string[] = [],
+  lastSources?: [MoveSource, MoveSource],
 ): Promise<AiRound> {
   // Tutto ciò che è a coppie va girato come lo vede l'AI.
   const seenFs: FightState = { ...fs, hp: ordered(fs.hp, swap) }
+  const roundNo = fs.round + 1
   return retry(async () => {
-    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, opening, seenFs, log, ordered(attacks, swap), event, lastTwist), cfg)
+    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, opening, seenFs, log, event, lastTwist, used, lastSources && ordered(lastSources, swap)), cfg)
     if (swap) {
-      flipPairs(raw, ['used', 'hits', 'recover', 'stamps', 'ko'])
+      flipPairs(raw, ['moves', 'hits', 'recover', 'stamps', 'ko'])
       const w = sideOf(raw.winner)
       raw.winner = w === null ? null : 1 - w
     }
-    return normalizeJudgement(raw)
+    return normalizeJudgement(raw, [offlineMove(fighters, 0, roundNo), offlineMove(fighters, 1, roundNo)])
   })
 }

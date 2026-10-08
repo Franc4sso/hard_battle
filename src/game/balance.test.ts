@@ -6,9 +6,10 @@
  */
 import { describe, expect, it } from 'vitest'
 import { DECKS } from '../../shared/cards'
-import { START, TONES, offlineJudgement, playRound, type Attack, type FightState, type Fighter, type Side, type Tone } from '../../shared/battle'
+import { START, TONES, offlineJudgement, playRound, type FightState, type Fighter, type Move, type MoveSource, type Side, type Tone } from '../../shared/battle'
 
-const atk = (tone: Tone): Attack => ({ name: tone, text: `fa ${tone}`, tone })
+const SOURCE_OF: Record<Tone, MoveSource> = { aggressiva: 'weapon', furba: 'personality', pazza: 'power' }
+const atk = (tone: Tone): Move => ({ name: tone, text: `fa ${tone}`, source: SOURCE_OF[tone] })
 const MOVES = { names: ['x', 'y'] as [string, string], actions: ['x', 'y'] as [string, string] }
 
 type Bot = (me: Side, fs: FightState, last: [Tone | null, Tone | null], r: () => number) => Tone

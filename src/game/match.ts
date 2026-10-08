@@ -1,19 +1,6 @@
 import { ARENAS, SABOTAGE_DECKS, SLOTS, decksFor, type Card, type DeckMode, type Slot } from '../../shared/cards'
 import { RARITIES, RARITY_ODDS } from '../../shared/rarity'
-import {
-  START,
-  cleanPicks,
-  eventAt,
-  mvpOf,
-  type BattleRequest,
-  type FightState,
-  type Monster,
-  type Opening,
-  type Picks,
-  type RoundEnd,
-  type RoundResult,
-  type Side,
-} from '../../shared/battle'
+import { START, eventAt, mvpOf, type BattleRequest, type FightState, type Monster, type Opening, type RoundEnd, type RoundResult, type Side } from '../../shared/battle'
 import { Rng } from './rng'
 
 export const REROLLS_PER_ROUND = 1
@@ -21,7 +8,7 @@ export const OFFER_SIZE = 3
 /** Le carte che l'avversario può imporre col sabotaggio (il personaggio resta tuo). */
 export const SABOTAGE_SLOTS: readonly Slot[] = ['weapon', 'personality', 'power']
 
-export type Phase = 'pass' | 'sabotage' | 'pick' | 'ready' | 'versus' | 'attacks' | 'battle' | 'verdict' | 'final'
+export type Phase = 'pass' | 'sabotage' | 'pick' | 'ready' | 'versus' | 'battle' | 'verdict' | 'final'
 
 /** Ogni round: A sabota B, B sabota A e crea il suo mostro, A crea il suo. */
 export type Task = 'sabotage' | 'draft'
@@ -42,18 +29,16 @@ export interface Gift {
 }
 
 export interface Fight {
-  /** Presentazione e i 5 attacchi di ciascuno: arriva mentre si guarda il VS. */
+  /** Presentazione: arriva mentre si guarda il VS. */
   opening: Opening | null
   /** Stato firmato dal server per il prossimo round (null = si continua col narratore di riserva). */
   token: string | null
   fs: FightState
   rounds: RoundResult[]
-  /** I 2 attacchi scelti in segreto da ciascuno, prima della rissa. */
-  picks: [Picks | null, Picks | null]
   end: RoundEnd | null
 }
 
-const freshFight = (): Fight => ({ opening: null, token: null, fs: START, rounds: [], picks: [null, null], end: null })
+const freshFight = (): Fight => ({ opening: null, token: null, fs: START, rounds: [], end: null })
 
 export interface RoundRecord {
   round: number
@@ -106,7 +91,6 @@ export type Action =
   | { type: 'confirm' }
   | { type: 'fight' }
   | { type: 'openingReady'; opening: Opening; token: string | null }
-  | { type: 'pickAttacks'; side: Side; picks: Picks }
   | { type: 'roundReady'; round: RoundResult; next: FightState; token: string | null }
   | { type: 'verdict' }
   | { type: 'nextRound' }
@@ -250,11 +234,6 @@ export function matchWinner(s: MatchState): Side | undefined {
 /** L'evento dell'arena del round da giocare, se c'è. */
 export const currentEvent = (s: MatchState) => eventAt(s.fight.opening?.events, s.fight.fs.round + 1)
 
-/** Il prossimo giocatore che deve scegliere i suoi attacchi (prima chi ha aperto il round), undefined se hanno scelto entrambi. */
-export function nextChooser(s: MatchState): Side | undefined {
-  return [s.first, other(s.first)].find((p) => s.fight.picks[p] === null)
-}
-
 export function reduce(state: MatchState, action: Action): MatchState {
   switch (action.type) {
     case 'beginTurn':
@@ -307,26 +286,15 @@ export function reduce(state: MatchState, action: Action): MatchState {
     }
 
     case 'fight':
-      return state.phase === 'versus' ? { ...state, phase: 'attacks' } : state
+      return state.phase === 'versus' ? { ...state, phase: 'battle' } : state
 
     case 'openingReady':
-      if (!['versus', 'attacks', 'battle'].includes(state.phase) || state.fight.opening) return state
+      if ((state.phase !== 'versus' && state.phase !== 'battle') || state.fight.opening) return state
       return { ...state, fight: { ...state.fight, opening: action.opening, token: action.token } }
-
-    case 'pickAttacks': {
-      const f = state.fight
-      const picks = cleanPicks(action.picks)
-      if (state.phase !== 'attacks' || !f.opening || !picks || nextChooser(state) !== action.side) return state
-      const all: [Picks | null, Picks | null] = [...f.picks]
-      all[action.side] = picks
-      const next = { ...state, fight: { ...f, picks: all } }
-      // Hanno scelto entrambi: la rissa parte da sola.
-      return nextChooser(next) === undefined ? { ...next, phase: 'battle' } : next
-    }
 
     case 'roundReady': {
       const f = state.fight
-      if (state.phase !== 'battle' || f.end || nextChooser(state) !== undefined) return state
+      if (state.phase !== 'battle' || f.end || !f.opening) return state
       const fight: Fight = {
         ...f,
         token: action.token,

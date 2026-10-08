@@ -30,48 +30,45 @@ export interface FighterIds {
 
 export const other = (s: Side): Side => (s === 0 ? 1 : 0)
 
-// ---------- mosse suggerite ----------
+// ---------- attacchi ----------
 
 /**
- * Ogni turno il gioco suggerisce 3 mosse, una per tipo. Il tipo non si mostra
- * ai giocatori: si capisce dal tono della frase. Serve all'AI per tenere le tre
- * frasi diverse tra loro e come traccia per giudicare.
+ * Prima della rissa l'AI prepara 5 attacchi per mostro, uno per carta più
+ * un'idea folle; ognuno ne sceglie 2 in segreto. Poi la rissa va da sola: a
+ * ogni round l'AI decide quale dei due usa ciascuno, racconta e giudica.
+ * Il tipo non si mostra ai giocatori: serve al narratore di riserva.
  * - aggressiva: attacco diretto;
  * - furba: trucco, finta, trappola, difesa;
- * - pazza: idea assurda e rischiosa, spesso col superpotere o con l'arena.
+ * - pazza: idea assurda e rischiosa.
  */
 export type Tone = 'aggressiva' | 'furba' | 'pazza'
 export const TONES: readonly Tone[] = ['aggressiva', 'furba', 'pazza']
 
-export interface Suggestion {
+export const ATTACKS_PER_FIGHTER = 5
+export const ATTACKS_TO_PICK = 2
+/** Da cosa nasce ciascuno dei 5 attacchi, nell'ordine. */
+export const ATTACK_SOURCES = ['il personaggio', 'l’arma', 'la personalità', 'il superpotere', 'un’idea folle e rischiosa'] as const
+/** Il tipo di ciascuno dei 5 attacchi, nell'ordine. */
+export const ATTACK_TONES: readonly Tone[] = ['aggressiva', 'aggressiva', 'furba', 'pazza', 'pazza']
+
+export interface Attack {
+  /** Nome da urlare, max 4 parole. */
+  name: string
+  /** Cosa fa, una frase. */
   text: string
   tone: Tone
-  /** Colpo finale: l'avversario è all'ultimo respiro. */
-  finisher?: true
 }
 
-/** La mossa scelta: una delle 3 suggerite oppure scritta dal giocatore. */
-export type Choice = { pick: number } | { custom: string }
+/** Gli indici dei 2 attacchi scelti tra i 5. */
+export type Picks = [number, number]
 
-/** Lunghezza massima di una mossa scritta dal giocatore. */
-export const CUSTOM_MAX = 120
-
-/** Ripulisce una mossa scritta dal giocatore: niente a capo, niente caratteri che sembrano codice. */
-export function cleanCustom(v: unknown): string {
-  if (typeof v !== 'string') return ''
-  return v
-    .replace(/[\u0000-\u001f<>{}[\]"`\\]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, CUSTOM_MAX)
+/** Due indici distinti tra 0 e 4, in qualsiasi forma arrivino; altrimenti niente. */
+export function cleanPicks(v: unknown): Picks | undefined {
+  if (!Array.isArray(v) || v.length !== ATTACKS_TO_PICK) return undefined
+  const p = v.map((x) => Number(x))
+  if (!p.every((x) => Number.isInteger(x) && x >= 0 && x < ATTACKS_PER_FIGHTER) || p[0] === p[1]) return undefined
+  return [p[0], p[1]]
 }
-
-/** Il testo della mossa scelta (vuoto se la scelta non è valida). */
-export function choiceText(offers: Suggestion[], c: Choice): string {
-  return 'pick' in c ? (offers[c.pick]?.text ?? '') : cleanCustom(c.custom)
-}
-
-export const choiceSuggestion = (offers: Suggestion[], c: Choice): Suggestion | undefined => ('pick' in c ? offers[c.pick] : undefined)
 
 // ---------- eventi dell'arena ----------
 
@@ -94,8 +91,8 @@ export interface Opening {
   intro: string
   nicknames: [string, string]
   events: ArenaEvent[]
-  /** Le mosse suggerite per il primo round. */
-  offers: [Suggestion[], Suggestion[]]
+  /** I 5 attacchi di ciascun mostro. */
+  attacks: [Attack[], Attack[]]
   source: 'ai' | 'offline'
 }
 
@@ -115,15 +112,13 @@ export const HIT_LABEL: Record<Hit, string> = { 0: 'ILLESO', 1: 'COLPITO', 2: 'C
 
 /** Il verdetto di un round: lo dà l'AI, il codice lo traduce in vita (che i giocatori non vedono in numeri). */
 export interface Judgement {
-  /** Nome epico di ciascuna mossa. */
-  moveNames: [string, string]
   stamps: [Stamp, Stamp]
   /** Quanto forte viene colpito ciascuno. */
   hits: [Hit, Hit]
   recover: [Recover, Recover]
   /** Chi ha la meglio nel round (null = pari). */
   winner: Side | null
-  /** La scena: cosa fanno, come si incrociano le mosse, come va a finire. */
+  /** La scena: cosa fanno, come si incrociano gli attacchi, come va a finire. */
   scene: string
   /** Il giudice: chi ha la meglio e perché. */
   why: string
@@ -132,8 +127,13 @@ export interface Judgement {
   ko: [string, string]
   /** Una frase per ricordare il round nei successivi. */
   summary: string
-  /** Le mosse suggerite per il round dopo. */
-  offers: [Suggestion[], Suggestion[]]
+  /** Colpo di scena legato ai personaggi, ogni tanto. */
+  twist: string | null
+}
+
+/** Il verdetto dell'AI con in più quale dei 2 attacchi scelti usa ciascuno (0 o 1). */
+export interface AiRound extends Judgement {
+  used: [0 | 1, 0 | 1]
 }
 
 // ---------- regole ----------
@@ -141,7 +141,7 @@ export interface Judgement {
 export const MAX_HP = 100
 /** Se nessuno crolla entro questo round, decide la giuria. */
 export const MAX_ROUNDS = 10
-/** Sotto questa vita si è all'ultimo respiro: arrivano le mosse disperate e i colpi finali. */
+/** Sotto questa vita si è all'ultimo respiro: colpi di reni e colpi finali. */
 export const LAST_BREATH = 25
 
 const HIT_DAMAGE: Record<Hit, number> = { 0: 0, 1: 12, 2: 22, 3: 34 }
@@ -175,11 +175,15 @@ export interface RoundEnd {
   finale: string
 }
 
-export interface RoundResult {
-  /** Le mosse scelte, come testo. */
+/** Gli attacchi usati in un round: nome e frase di ciascuno. */
+export interface Moves {
+  names: [string, string]
   actions: [string, string]
-  /** Mossa scritta dal giocatore invece che suggerita. */
-  custom: [boolean, boolean]
+}
+
+export interface RoundResult {
+  /** Gli attacchi usati, come testo. */
+  actions: [string, string]
   moveNames: [string, string]
   stamps: [Stamp, Stamp]
   hits: [Hit, Hit]
@@ -193,6 +197,8 @@ export interface RoundResult {
   sfx: string
   /** L'evento dell'arena di questo round, se c'era. */
   event: string | null
+  /** Colpo di scena dei personaggi, se c'è stato. */
+  twist: string | null
   summary: string
   end: RoundEnd | null
 }
@@ -217,15 +223,7 @@ export function consistent(j: Pick<Judgement, 'hits' | 'recover' | 'winner'>): P
 }
 
 /** Applica un round: vita, KO o giuria. I numeri restano nascosti, il racconto è dell'AI. */
-export function playRound(
-  fs: FightState,
-  actions: [string, string],
-  custom: [boolean, boolean],
-  j: Judgement,
-  names: [string, string],
-  rand: () => number,
-  event?: ArenaEvent,
-): { round: RoundResult; next: FightState } {
+export function playRound(fs: FightState, moves: Moves, j: Judgement, names: [string, string], rand: () => number, event?: ArenaEvent): { round: RoundResult; next: FightState } {
   const roundNo = fs.round + 1
   const { hits, recover, winner } = consistent(j)
   // Colpo di reni: chi è all'ultimo respiro e ha la meglio colpisce ancora più forte. Così le rimonte succedono.
@@ -262,9 +260,8 @@ export function playRound(
 
   return {
     round: {
-      actions,
-      custom,
-      moveNames: j.moveNames,
+      actions: moves.actions,
+      moveNames: moves.names,
       stamps: j.stamps,
       hits,
       damage,
@@ -275,6 +272,7 @@ export function playRound(
       why: j.why,
       sfx: j.sfx,
       event: event?.text ?? null,
+      twist: j.twist,
       summary: j.summary,
       end,
     },
@@ -314,55 +312,20 @@ const clampInt = <T extends number>(v: unknown, max: number, fallback: T): T => 
 const isTone = (v: unknown): v is Tone => TONES.includes(v as Tone)
 
 /**
- * Le 3 mosse suggerite: una per tipo, nell'ordine aggressiva, furba, pazza.
- * Quello che manca o non va si prende dalle mosse di riserva.
+ * I 5 attacchi di un mostro, nell'ordine delle carte. Quello che manca o non
+ * va si prende dagli attacchi di riserva, stesso posto.
  */
-export function normalizeOffers(raw: unknown, backup: Suggestion[]): Suggestion[] {
+export function normalizeAttacks(raw: unknown, backup: Attack[]): Attack[] {
   const list = (Array.isArray(raw) ? raw : []).map((x) => (typeof x === 'string' ? { text: x } : ((x ?? {}) as Record<string, unknown>)))
-  const used = new Set<number>()
-  return TONES.map((tone, k) => {
-    // Prima quella col tipo giusto, poi una qualsiasi non ancora usata.
-    let i = list.findIndex((x, n) => !used.has(n) && x.tone === tone && text(x.text, 160))
-    if (i < 0) i = list.findIndex((x, n) => !used.has(n) && !isTone(x.tone) && text(x.text, 160))
-    const b = backup[k]
-    if (i < 0) return b
-    used.add(i)
-    // A volte l'AI scrive i campi dentro la frase ("…, finisher: true"): via.
-    const t = text(String(list[i].text).replace(/[,;(\s]*(finisher|tone)\s*[:=].*$/i, ''), 160)
-    return { text: t, tone, ...(list[i].finisher === true || (b.finisher && tone === 'pazza') ? { finisher: true as const } : {}) }
+  const seen = new Set<string>()
+  return backup.map((b, i) => {
+    const x = list[i]
+    const t = text(x?.text, 160)
+    const name = text(x?.name, 40)
+    if (!t || !name || seen.has(name.toLowerCase())) return b
+    seen.add(name.toLowerCase())
+    return { name, text: t, tone: isTone(x?.tone) ? x.tone : b.tone }
   })
-}
-
-/**
- * Il colpo finale lo decide la vita vera, non l'AI: c'è solo se l'avversario è
- * all'ultimo respiro, e in quel caso c'è sempre (sulla mossa pazza).
- */
-export function fixFinishers(offers: [Suggestion[], Suggestion[]], fs: FightState): [Suggestion[], Suggestion[]] {
-  return offers.map((list, side) => {
-    const on = fs.hp[other(side as Side)] <= LAST_BREATH
-    return list.map(({ finisher: _, ...o }) => (on && o.tone === 'pazza' ? { ...o, finisher: true as const } : o))
-  }) as [Suggestion[], Suggestion[]]
-}
-
-const words = (t: string) => new Set(t.toLowerCase().split(/[^a-zà-ù]+/).filter((w) => w.length > 3))
-
-/** Due mosse dicono quasi la stessa cosa (stesse parole importanti). */
-export function similar(a: string, b: string): boolean {
-  const x = words(a)
-  const y = words(b)
-  // Frasi troppo corte: non si può dire.
-  if (Math.min(x.size, y.size) < 3) return false
-  let common = 0
-  for (const w of x) if (y.has(w)) common++
-  return common / Math.min(x.size, y.size) >= 0.85
-}
-
-/** Una mossa già vista (o quasi) non si ripropone: al suo posto quella di riserva dello stesso tipo. */
-export function dedupeOffers(offers: [Suggestion[], Suggestion[]], seen: string[], backup: [Suggestion[], Suggestion[]]): [Suggestion[], Suggestion[]] {
-  return offers.map((list, side) => list.map((o, k) => (seen.some((t) => similar(o.text, t)) ? { ...backup[side][k], ...(o.finisher ? { finisher: true as const } : {}) } : o))) as [
-    Suggestion[],
-    Suggestion[],
-  ]
 }
 
 export function normalizeOpening(
@@ -370,14 +333,14 @@ export function normalizeOpening(
   fighters: [Fighter, Fighter],
   source: Opening['source'],
   events: ArenaEvent[] = [],
-  backupOffers: [Suggestion[], Suggestion[]] = [offlineOffers(fighters, 0, START), offlineOffers(fighters, 1, START)],
+  backup: [Attack[], Attack[]] = [offlineAttacks(fighters, 0), offlineAttacks(fighters, 1)],
 ): Opening | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const title = text(r.title, 80)
   if (!title) return null
   const nick = pair(r.nicknames)
-  const offers = pair(r.offers)
+  const attacks = pair(r.attacks)
   // Eventi: il calendario arriva dal server; dal telefono si accetta solo un formato pulito.
   const rawEvents = !events.length && Array.isArray(r.events) ? (r.events as ArenaEvent[]) : events
   return {
@@ -385,7 +348,7 @@ export function normalizeOpening(
     intro: text(r.intro, 400),
     nicknames: [text(nick[0], 40) || fighters[0].monster.character.name, text(nick[1], 40) || fighters[1].monster.character.name],
     events: rawEvents.filter((e) => e && Number.isInteger(e.round) && text(e.text, 220)).map((e) => ({ round: e.round, text: text(e.text, 220) })),
-    offers: [normalizeOffers(offers[0], backupOffers[0]), normalizeOffers(offers[1], backupOffers[1])],
+    attacks: [normalizeAttacks(attacks[0], backup[0]), normalizeAttacks(attacks[1], backup[1])],
     source,
   }
 }
@@ -395,16 +358,15 @@ export const sideOf = (v: unknown): Side | null => (v === 0 || v === '0' ? 0 : v
 
 const isStamp = (v: unknown): v is Stamp => STAMPS.includes(String(v).toUpperCase() as Stamp)
 
-export function normalizeJudgement(raw: unknown, backupOffers: [Suggestion[], Suggestion[]]): Judgement | null {
+export function normalizeJudgement(raw: unknown): AiRound | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const scene = text(r.scene, 900)
   if (!scene) return null
-  const names = pair(r.moveNames).map((n) => text(n, 40))
   const stamps = pair(r.stamps).map((s) => (isStamp(s) ? (String(s).toUpperCase() as Stamp) : 'CLASSICA')) as [Stamp, Stamp]
-  const offers = pair(r.offers)
+  const twist = text(r.twist, 260)
   return {
-    moveNames: [names[0] || 'Mossa a sorpresa', names[1] || 'Mossa a sorpresa'],
+    used: pair(r.used).map((u) => (sideOf(u) === 1 ? 1 : 0)) as [0 | 1, 0 | 1],
     stamps,
     hits: pair(r.hits).map((h) => clampInt<Hit>(h, 3, 1)) as [Hit, Hit],
     recover: pair(r.recover).map((h) => clampInt<Recover>(h, 2, 0)) as [Recover, Recover],
@@ -414,7 +376,7 @@ export function normalizeJudgement(raw: unknown, backupOffers: [Suggestion[], Su
     sfx: text(r.sfx, 16).toUpperCase() || 'SBAM!',
     ko: pair(r.ko).map((k) => text(k, 400)) as [string, string],
     summary: text(r.summary, 200),
-    offers: [normalizeOffers(offers[0], backupOffers[0]), normalizeOffers(offers[1], backupOffers[1])],
+    twist: twist && twist.toLowerCase() !== 'null' ? twist : null,
   }
 }
 
@@ -423,41 +385,21 @@ export function normalizeJudgement(raw: unknown, backupOffers: [Suggestion[], Su
 const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
 const EPITHETS = ['il Terribile', 'l’Inarrestabile', 'il Leggendario', 'il Distruttore', 'il Magnifico', 'l’Implacabile']
 
-function hash(s: string): number {
-  let h = 0
-  for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0
-  return h
-}
+/** Max 4 parole, come i nomi che chiediamo all'AI. */
+const shortName = (s: string) => s.split(' ').slice(0, 4).join(' ')
 
-/** Mosse di riserva costruite dalle carte, diverse a ogni round. */
-export function offlineOffers(fighters: [Fighter, Fighter], side: Side, fs: FightState): Suggestion[] {
+/** I 5 attacchi di riserva, costruiti dalle carte: uno per carta più la pazzia. */
+export function offlineAttacks(fighters: [Fighter, Fighter], side: Side): Attack[] {
   const me = fighters[side].monster
   const foe = fighters[other(side)].monster.character.name
   const weapon = lower(me.weapon.name)
-  const k = hash(me.character.id + me.weapon.id) + fs.round
-  const pick = (xs: string[]) => xs[k % xs.length]
-  const desperate = fs.hp[side] <= LAST_BREATH
-  const finisher = fs.round > 0 && fs.hp[other(side)] <= LAST_BREATH
   // Senza articoli: i nomi delle carte non dicono se sono maschili o femminili.
-  const aggressive = desperate
-    ? `Con l’ultimo fiato si butta su ${foe}, armato di ${weapon}`
-    : pick([
-        `Si lancia su ${foe} e lo tempesta a colpi di ${weapon}`,
-        `Gira intorno a ${foe} e lo prende alle spalle a colpi di ${weapon}`,
-        `Prende la rincorsa e travolge ${foe}, armato di ${weapon}`,
-      ])
-  const sly = pick([
-    `Fa finta di inciampare, poi colpisce ${foe} alle spalle`,
-    `Si nasconde e aspetta che ${foe} si scopra per contrattaccare`,
-    `Indica qualcosa dietro ${foe} e, appena si gira, gli fa lo sgambetto`,
-  ])
-  const crazy = finisher
-    ? `Colpo finale: scatena «${me.power.name}» su ${foe} con tutto quello che ha`
-    : pick([`Scatena «${me.power.name}» contro ${foe}, senza pensarci due volte`, `Prova una cosa mai vista: «${me.power.name}» armato di ${weapon}`])
   return [
-    { text: aggressive, tone: 'aggressiva' },
-    { text: sly, tone: 'furba' },
-    { text: crazy, tone: 'pazza', ...(finisher ? { finisher: true as const } : {}) },
+    { name: `Carica di ${shortName(me.character.name)}`, text: `Prende la rincorsa e travolge ${foe} con tutto il peso che ha`, tone: 'aggressiva' },
+    { name: `Colpo di ${shortName(weapon)}`, text: `Si lancia su ${foe} e lo tempesta a colpi di ${weapon}`, tone: 'aggressiva' },
+    { name: `Trucco ${shortName(lower(me.personality.name))}`, text: `Fa finta di inciampare, poi colpisce ${foe} alle spalle`, tone: 'furba' },
+    { name: shortName(me.power.name), text: `Scatena «${me.power.name}» contro ${foe}, senza pensarci due volte`, tone: 'pazza' },
+    { name: 'Pazzia totale', text: `Prova una cosa mai vista: «${me.power.name}» armato di ${weapon}, urlando`, tone: 'pazza' },
   ]
 }
 
@@ -475,7 +417,7 @@ export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: 
     intro: `Signore e signori, benvenuti: ${where}. ${arena.desc} Che la rissa abbia inizio!`,
     nicknames: [`${name(fighters[0])} ${pick(EPITHETS)}`, `${name(fighters[1])} ${pick(EPITHETS)}`],
     events: scheduleEvents(rand).map((round, i) => ({ round, text: scenes[(i + Math.floor(rand() * 3)) % 3] })),
-    offers: [offlineOffers(fighters, 0, START), offlineOffers(fighters, 1, START)],
+    attacks: [offlineAttacks(fighters, 0), offlineAttacks(fighters, 1)],
     source: 'offline',
   }
 }
@@ -483,16 +425,10 @@ export function offlineOpening(fighters: [Fighter, Fighter], arena: Card, rand: 
 /** Chi batte chi, nel narratore di riserva: la furbata punisce chi carica, la carica travolge la pazzia, la pazzia spiazza la furbata. */
 const BEATS: Record<Tone, Tone> = { furba: 'aggressiva', aggressiva: 'pazza', pazza: 'furba' }
 
-/** Verdetto di riserva, senza AI. `tones`: il tipo di mossa scelto (null = scritta dal giocatore). */
-export function offlineJudgement(
-  fighters: [Fighter, Fighter],
-  fs: FightState,
-  actions: [string, string],
-  tones: [Tone | null, Tone | null],
-  rand: () => number = Math.random,
-): Judgement {
+/** Verdetto di riserva, senza AI, sui due attacchi usati in questo round. */
+export function offlineJudgement(fighters: [Fighter, Fighter], used: [Attack, Attack], rand: () => number = Math.random): Judgement {
   const names = fighters.map((f) => f.monster.character.name) as [string, string]
-  const t = tones.map((x) => x ?? TONES[Math.floor(rand() * 3)]) as [Tone, Tone]
+  const t: [Tone, Tone] = [used[0].tone, used[1].tone]
   let winner: Side | null = null
   if (BEATS[t[0]] === t[1]) winner = 0
   else if (BEATS[t[1]] === t[0]) winner = 1
@@ -505,14 +441,12 @@ export function offlineJudgement(
     hits[winner] = rand() < 0.5 ? 0 : 1
     hits[other(winner)] = rand() < 0.3 ? 3 : 2
   }
-  const scene = `${names[0]} ${lower(actions[0])}. Nello stesso istante ${names[1]} ${lower(actions[1])}.`
+  const scene = `${names[0]} ${lower(used[0].text)}. Nello stesso istante ${names[1]} ${lower(used[1].text)}.`
   const why =
     winner === null
       ? 'Nessuno dei due riesce a prevalere: se le danno di santa ragione e restano entrambi in piedi.'
       : `Ha la meglio ${names[winner]}: la sua mossa arriva proprio nel momento giusto e ${names[other(winner)]} resta scoperto.`
-  const next: FightState = { hp: fs.hp, round: fs.round + 1 }
   return {
-    moveNames: actions.map((a) => a.split(' ').slice(0, 3).join(' ')) as [string, string],
     stamps: ['CLASSICA', 'CLASSICA'],
     hits,
     recover: [0, 0],
@@ -525,6 +459,6 @@ export function offlineJudgement(
       `${names[1]} va al tappeto e non si rialza. ${names[0]} festeggia sulle macerie.`,
     ],
     summary: why,
-    offers: [offlineOffers(fighters, 0, next), offlineOffers(fighters, 1, next)],
+    twist: null,
   }
 }

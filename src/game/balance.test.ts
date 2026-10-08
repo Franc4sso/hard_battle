@@ -6,7 +6,10 @@
  */
 import { describe, expect, it } from 'vitest'
 import { DECKS } from '../../shared/cards'
-import { START, TONES, offlineJudgement, playRound, type FightState, type Fighter, type Side, type Tone } from '../../shared/battle'
+import { START, TONES, offlineJudgement, playRound, type Attack, type FightState, type Fighter, type Side, type Tone } from '../../shared/battle'
+
+const atk = (tone: Tone): Attack => ({ name: tone, text: `fa ${tone}`, tone })
+const MOVES = { names: ['x', 'y'] as [string, string], actions: ['x', 'y'] as [string, string] }
 
 type Bot = (me: Side, fs: FightState, last: [Tone | null, Tone | null], r: () => number) => Tone
 
@@ -52,8 +55,8 @@ function series(a: Bot, b: Bot, n: number, seed = 7): Stats {
     const deficit: [number, number] = [0, 0]
     for (;;) {
       const tones: [Tone, Tone] = [bots[0](0, fs, last, r), bots[1](1, fs, last, r)]
-      const j = offlineJudgement(fighters, fs, ['x', 'y'], tones, r)
-      const out = playRound(fs, ['x', 'y'], [false, false], j, ['A', 'B'], r)
+      const j = offlineJudgement(fighters, [atk(tones[0]), atk(tones[1])], r)
+      const out = playRound(fs, MOVES, j, ['A', 'B'], r)
       fs = out.next
       last[0] = tones[0]
       last[1] = tones[1]

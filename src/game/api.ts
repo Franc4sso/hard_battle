@@ -1,24 +1,21 @@
 import {
-  choiceSuggestion,
-  choiceText,
-  normalizeOffers,
   normalizeOpening,
   offlineJudgement,
-  offlineOffers,
   offlineOpening,
   playRound,
-  type Choice,
+  type Attack,
   type FightState,
   type Fighter,
   type Monster,
+  type Moves,
   type Opening,
+  type Picks,
   type RoundResult,
-  type Suggestion,
 } from '../../shared/battle'
 import { battleRequest, currentEvent, type MatchState } from './match'
 
 const TIMEOUT_MS = 20_000
-// Una sola richiesta per passo, anche se la chiedono più schermate (VS e rissa) o StrictMode.
+// Una sola richiesta per passo, anche se la chiedono più schermate o StrictMode.
 const inflight = new Map<string, Promise<unknown>>()
 
 function once<T>(key: string, run: () => Promise<T>): Promise<T> {
@@ -54,8 +51,8 @@ export const fightersOf = (s: MatchState): [Fighter, Fighter] => {
 }
 
 /**
- * Presentazione e prime mosse. Parte appena si apre il VS, così quando si preme
- * COMBATTETE è già pronta. Senza AI le prepara il narratore di riserva.
+ * Presentazione e i 5 attacchi di ciascuno. Parte appena si apre il VS, così
+ * quando si passa alla scelta è già pronta. Senza AI li prepara il narratore di riserva.
  */
 export function requestOpening(s: MatchState): Promise<{ opening: Opening; token: string | null }> {
   return once(`${s.seed}-${s.round}-open`, async () => {
@@ -71,36 +68,28 @@ function isRound(v: unknown): v is RoundResult {
   return !!r && Array.isArray(r.hp) && Array.isArray(r.hits) && Array.isArray(r.actions) && Array.isArray(r.moveNames) && typeof r.scene === 'string'
 }
 
-type RoundOut = { round: RoundResult; next: FightState; offers: [Suggestion[], Suggestion[]]; token: string | null }
+type RoundOut = { round: RoundResult; next: FightState; token: string | null }
 
 /**
- * Un round: lo giudica il server con l'AI e rimanda lo stato firmato e le mosse
- * per il round dopo. Se l'AI non risponde, il round lo gioca il narratore di
- * riserva e la rissa prosegue offline.
+ * Un round: lo gioca il server con l'AI, che sceglie quale dei 2 attacchi usa
+ * ciascuno, e rimanda lo stato firmato. Se l'AI non risponde, il round lo gioca
+ * il narratore di riserva e la rissa prosegue offline.
  */
 export function requestRound(s: MatchState): Promise<RoundOut> {
   const f = s.fight
-  const choices = f.choices as [Choice, Choice]
+  const picks = f.picks as [Picks, Picks]
   return once(`${s.seed}-${s.round}-r${f.rounds.length}`, async () => {
-    const fighters = fightersOf(s)
-    const body = f.token ? await post({ stage: 'round', token: f.token, choices }) : null
+    const body = f.token ? await post({ stage: 'round', token: f.token, picks }) : null
     const next = body?.next as FightState | undefined
-    const rawOffers = body?.offers as unknown[] | undefined
-    if (body && isRound(body.round) && next && Array.isArray(next.hp) && Array.isArray(rawOffers) && typeof body.token === 'string') {
-      const offers: [Suggestion[], Suggestion[]] = [
-        normalizeOffers(rawOffers[0], offlineOffers(fighters, 0, next)),
-        normalizeOffers(rawOffers[1], offlineOffers(fighters, 1, next)),
-      ]
-      return { round: body.round, next, offers, token: body.token }
-    }
-    const actions: [string, string] = [choiceText(f.offers[0], choices[0]), choiceText(f.offers[1], choices[1])]
-    const tones = [choiceSuggestion(f.offers[0], choices[0])?.tone ?? null, choiceSuggestion(f.offers[1], choices[1])?.tone ?? null] as const
-    const judgement = offlineJudgement(fighters, f.fs, actions, [tones[0], tones[1]])
+    if (body && isRound(body.round) && next && Array.isArray(next.hp) && typeof body.token === 'string') return { round: body.round, next, token: body.token }
+    const fighters = fightersOf(s)
+    const opening = f.opening as Opening
+    // Senza AI si alternano i due attacchi, partendo da uno a caso.
+    const used = [0, 1].map((side) => opening.attacks[side][picks[side][(f.rounds.length + side + (s.seed % 2)) % 2]]) as [Attack, Attack]
+    const moves: Moves = { names: [used[0].name, used[1].name], actions: [used[0].text, used[1].text] }
+    const judgement = offlineJudgement(fighters, used, Math.random)
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]
-    const custom: [boolean, boolean] = ['custom' in choices[0], 'custom' in choices[1]]
-    const out = playRound(f.fs, actions, custom, judgement, names, Math.random, currentEvent(s))
-    // Le mosse del round dopo seguono la vita di adesso.
-    const offers: [Suggestion[], Suggestion[]] = [offlineOffers(fighters, 0, out.next), offlineOffers(fighters, 1, out.next)]
-    return { ...out, offers, token: null }
+    const out = playRound(f.fs, moves, judgement, names, Math.random, currentEvent(s))
+    return { ...out, token: null }
   })
 }

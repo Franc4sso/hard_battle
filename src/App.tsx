@@ -7,7 +7,7 @@ import { randomSeed } from './game/rng'
 import { loadMatch, loadPrefs, saveMatch, savePrefs, type Prefs } from './game/storage'
 import { Button, Icon, Sheet } from './ui/components'
 import { PassScreen, PickScreen, ReadyScreen, SabotageScreen } from './ui/screens/Draft'
-import { BattleScreen, FinalScreen, VersusScreen, VerdictScreen } from './ui/screens/Fight'
+import { AttacksScreen, BattleScreen, FinalScreen, VersusScreen, VerdictScreen } from './ui/screens/Fight'
 import { BestiaryScreen, HomeScreen, SetupScreen } from './ui/screens/Menu'
 
 type View = 'home' | 'setup' | 'bestiary' | 'game'
@@ -91,6 +91,7 @@ export default function App() {
     pick: <PickScreen {...props} />,
     ready: <ReadyScreen {...props} />,
     versus: <VersusScreen {...props} />,
+    attacks: <AttacksScreen {...props} />,
     battle: <BattleScreen {...props} />,
     verdict: <VerdictScreen {...props} />,
     final: (

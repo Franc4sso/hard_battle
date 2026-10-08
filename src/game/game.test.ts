@@ -1,29 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import { ARENAS, DECKS, DIRTY_DECKS, HEALING_POWER_IDS, SABOTAGE_DECKS, SLOTS, decksFor, findCard } from '../../shared/cards'
 import {
-  CUSTOM_MAX,
+  ATTACKS_PER_FIGHTER,
+  ATTACK_TONES,
   LAST_BREATH,
   MAX_ROUNDS,
   START,
-  cleanCustom,
+  cleanPicks,
   consistent,
-  dedupeOffers,
-  fixFinishers,
   hpState,
+  normalizeAttacks,
   normalizeJudgement,
-  normalizeOffers,
   normalizeOpening,
+  offlineAttacks,
   offlineJudgement,
-  offlineOffers,
   offlineOpening,
   playRound,
   scheduleEvents,
-  similar,
+  type Attack,
   type FightState,
   type Fighter,
   type Judgement,
   type Monster,
-  type Suggestion,
+  type Moves,
 } from '../../shared/battle'
 import { generateOpening, generateRound, roundPrompt } from '../../server/groq'
 import { handleBattleRequest, hasDirtyCard, parseRequest } from '../../server/handler'
@@ -43,13 +42,14 @@ function fighters(): [Fighter, Fighter] {
 }
 const NAMES: [string, string] = ['A', 'B']
 const half = () => 0.5
-const OFFERS: Suggestion[] = [
-  { text: 'Attacca forte', tone: 'aggressiva' },
-  { text: 'Fa una finta', tone: 'furba' },
-  { text: 'Fa una pazzia', tone: 'pazza' },
+const ATTACKS: Attack[] = [
+  { name: 'Carica', text: 'Attacca forte', tone: 'aggressiva' },
+  { name: 'Legnata', text: 'Colpisce con l’arma', tone: 'aggressiva' },
+  { name: 'Finta', text: 'Fa una finta', tone: 'furba' },
+  { name: 'Potere', text: 'Usa il superpotere', tone: 'pazza' },
+  { name: 'Pazzia', text: 'Fa una pazzia', tone: 'pazza' },
 ]
 const judge = (over: Partial<Judgement> = {}): Judgement => ({
-  moveNames: ['Mossa A', 'Mossa B'],
   stamps: ['CLASSICA', 'FURBA'],
   hits: [1, 2],
   recover: [0, 0],
@@ -59,10 +59,11 @@ const judge = (over: Partial<Judgement> = {}): Judgement => ({
   sfx: 'SBAM!',
   ko: ['A crolla', 'B crolla'],
   summary: 's',
-  offers: [OFFERS, OFFERS],
+  twist: null,
   ...over,
 })
-const play = (fs: FightState, j: Judgement) => playRound(fs, ['a', 'b'], [false, false], j, NAMES, half)
+const MOVES: Moves = { names: ['Mossa A', 'Mossa B'], actions: ['a', 'b'] }
+const play = (fs: FightState, j: Judgement) => playRound(fs, MOVES, j, NAMES, half)
 
 /** Gioca i 4 turni di un round: sabotaggi e creazione dei mostri. */
 function draftRound(s: MatchState): MatchState {
@@ -76,21 +77,27 @@ function draftRound(s: MatchState): MatchState {
   return s
 }
 
+/** Dal VS alla scelta degli attacchi, con presentazione e attacchi già arrivati. */
 const startFight = (s: MatchState, token: string | null = null) =>
-  reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: { ...offlineOpening(fighters(), ARENAS[0]), offers: [OFFERS, OFFERS] }, token })
+  reduce(reduce(s, { type: 'fight' }), { type: 'openingReady', opening: { ...offlineOpening(fighters(), ARENAS[0]), attacks: [ATTACKS, ATTACKS] }, token })
 
-/** Rissa offline giocata fino alla fine: il giocatore 0 attacca sempre, l'1 fa sempre pazzie. */
+/** Entrambi scelgono i 2 attacchi: da qui la rissa va da sola. */
+function pickAll(s: MatchState): MatchState {
+  for (let k = 0; k < 2; k++) {
+    const who = nextChooser(s)!
+    s = reduce(s, { type: 'pickAttacks', side: who, picks: who === 0 ? [0, 2] : [3, 4] })
+  }
+  if (nextChooser(s) !== undefined) throw new Error('scelta rifiutata')
+  return s
+}
+
+/** Rissa giocata fino alla fine: il giocatore 0 colpisce sempre devastante. */
 function fightToEnd(s: MatchState): MatchState {
-  s = startFight(s)
+  s = pickAll(startFight(s))
   for (let guard = 0; !s.fight.end; guard++) {
     if (guard > MAX_ROUNDS) throw new Error('la rissa non finisce')
-    for (let k = 0; k < 2; k++) {
-      const who = nextChooser(s)!
-      s = reduce(s, { type: 'choose', side: who, choice: { pick: who === 0 ? 0 : 2 } })
-    }
-    if (nextChooser(s) !== undefined) throw new Error('mossa rifiutata')
     const { round, next } = play(s.fight.fs, judge({ hits: [0, 3], winner: 0 }))
-    s = reduce(s, { type: 'roundReady', round, next, offers: [OFFERS, OFFERS], token: null })
+    s = reduce(s, { type: 'roundReady', round, next, token: null })
   }
   return reduce(s, { type: 'verdict' })
 }
@@ -151,7 +158,7 @@ describe('carte trappola', () => {
   it('l’AI sa quali carte sono trappole', () => {
     const f = fighters()
     const trapped: [Fighter, Fighter] = [{ ...f[0], monster: { ...f[0].monster, weapon: SABOTAGE_DECKS.weapon[0] } }, f[1]]
-    const p = roundPrompt(trapped, ARENAS[0], { title: 'T' }, START, [], [{ text: 'x' }, { text: 'y' }])
+    const p = roundPrompt(trapped, ARENAS[0], { title: 'T' }, START, [], [[ATTACKS[0], ATTACKS[1]], [ATTACKS[2], ATTACKS[3]]])
     expect(p).toContain('CARTA TRAPPOLA')
   })
 })
@@ -268,100 +275,78 @@ describe('regole del round', () => {
       expect([2, 3]).toContain(a)
       expect([4, 5, 6]).toContain(b)
     }
-    const r = playRound(START, ['a', 'b'], [false, false], judge(), NAMES, half, { round: 1, text: 'Piove dal soffitto' })
+    const r = playRound(START, MOVES, judge(), NAMES, half, { round: 1, text: 'Piove dal soffitto' })
     expect(r.round.event).toBe('Piove dal soffitto')
+  })
+
+  it('il round porta i nomi degli attacchi usati e il colpo di scena', () => {
+    const r = play(START, judge({ twist: 'Il koala crolla dal sonno' })).round
+    expect(r.moveNames).toEqual(['Mossa A', 'Mossa B'])
+    expect(r.actions).toEqual(['a', 'b'])
+    expect(r.twist).toBe('Il koala crolla dal sonno')
   })
 })
 
-describe('mosse suggerite', () => {
-  it('sempre 3, una per tipo, nell’ordine; quello che manca arriva dalla riserva', () => {
-    const backup = offlineOffers(fighters(), 0, START)
-    const o = normalizeOffers(
+describe('attacchi', () => {
+  it('sempre 5, nell’ordine delle carte; quello che manca o è doppio arriva dalla riserva', () => {
+    const backup = offlineAttacks(fighters(), 0)
+    expect(backup).toHaveLength(ATTACKS_PER_FIGHTER)
+    expect(backup.map((a) => a.tone)).toEqual(ATTACK_TONES)
+    const a = normalizeAttacks(
       [
-        { text: 'Una pazzia', tone: 'pazza' },
-        { text: 'Un colpo', tone: 'aggressiva' },
+        { name: 'Carica', text: 'Un colpo', tone: 'aggressiva' },
+        { name: 'Senza testo' },
+        { name: 'carica', text: 'Doppione col nome uguale', tone: 'furba' },
+        { name: 'Tipo strano', text: 'x', tone: 'boh' },
       ],
       backup,
     )
-    expect(o.map((x) => x.tone)).toEqual(['aggressiva', 'furba', 'pazza'])
-    expect(o[0].text).toBe('Un colpo')
-    expect(o[1]).toBe(backup[1])
-    expect(o[2].text).toBe('Una pazzia')
-    // Anche solo frasi, senza tipo.
-    expect(normalizeOffers(['uno', 'due', 'tre'], backup).map((x) => x.text)).toEqual(['uno', 'due', 'tre'])
-    expect(normalizeOffers(undefined, backup)).toEqual(backup)
-    // Campi scritti per sbaglio dentro la frase.
-    expect(normalizeOffers([{ text: 'Uno', tone: 'aggressiva' }, { text: 'Due', tone: 'furba' }, { text: 'Gli tira una torta, finisher:true', tone: 'pazza' }], backup)[2].text).toBe('Gli tira una torta')
+    expect(a[0]).toEqual({ name: 'Carica', text: 'Un colpo', tone: 'aggressiva' })
+    expect(a[1]).toBe(backup[1])
+    expect(a[2]).toBe(backup[2])
+    expect(a[3]).toEqual({ name: 'Tipo strano', text: 'x', tone: backup[3].tone })
+    expect(a[4]).toBe(backup[4])
+    expect(normalizeAttacks(undefined, backup)).toEqual(backup)
   })
 
-  it('le mosse di riserva seguono la situazione: disperate all’ultimo respiro, colpo finale sull’avversario a terra', () => {
-    const f = fighters()
-    const calm = offlineOffers(f, 0, START)
-    expect(calm.some((o) => o.finisher)).toBe(false)
-    const low = offlineOffers(f, 0, { hp: [10, 90], round: 4 })
-    expect(low[0].text).toMatch(/ultimo fiato/)
-    const finish = offlineOffers(f, 0, { hp: [90, 10], round: 4 })
-    expect(finish[2].finisher).toBe(true)
-    // Cambiano da un round all'altro.
-    const r1 = offlineOffers(f, 0, { hp: [80, 80], round: 1 })
-    const r2 = offlineOffers(f, 0, { hp: [80, 80], round: 2 })
-    expect(r1.map((o) => o.text)).not.toEqual(r2.map((o) => o.text))
-  })
-
-  it('il colpo finale lo decide la vita vera, non l’AI', () => {
-    const flagged: Suggestion[] = OFFERS.map((o) => ({ ...o, finisher: true as const }))
-    const calm = fixFinishers([flagged, flagged], { hp: [80, 60], round: 2 })
-    expect(calm.flat().some((o) => o.finisher)).toBe(false)
-    const end = fixFinishers([OFFERS, OFFERS], { hp: [80, 20], round: 4 })
-    expect(end[0].map((o) => !!o.finisher)).toEqual([false, false, true])
-    expect(end[1].some((o) => o.finisher)).toBe(false)
-  })
-
-  it('una mossa già vista, anche riscritta un po’, non si ripropone', () => {
-    expect(similar('Crea una bolla elettrica che rimbalza sul cuscino', 'Crea una bolla elettrica che rimbalza sul cuscino, scaricando Colombo')).toBe(true)
-    expect(similar('Lancia il cuscino gigante contro la valigia', 'Trasforma il pianeta in pasta al dente')).toBe(false)
-    const backup: [Suggestion[], Suggestion[]] = [OFFERS, OFFERS]
-    const fresh: Suggestion[] = [
-      { text: 'Crea una bolla elettrica che rimbalza sul cuscino', tone: 'aggressiva' },
-      { text: 'Nasconde una buccia di banana sotto il tappeto', tone: 'furba' },
-      { text: 'Chiama in aiuto un piccione gigante', tone: 'pazza' },
-    ]
-    const out = dedupeOffers([fresh, fresh], ['Crea una bolla elettrica che rimbalza sul cuscino, scaricando Colombo'], backup)
-    expect(out[0][0]).toEqual(OFFERS[0])
-    expect(out[0][1].text).toBe('Nasconde una buccia di banana sotto il tappeto')
-  })
-
-  it('la mossa scritta dal giocatore viene ripulita', () => {
-    expect(cleanCustom('  Gli tira\n una "torta" {in faccia}  ')).toBe('Gli tira una torta in faccia')
-    expect(cleanCustom('x'.repeat(500))).toHaveLength(CUSTOM_MAX)
-    expect(cleanCustom(42)).toBe('')
+  it('si scelgono 2 indici distinti tra 0 e 4', () => {
+    expect(cleanPicks([0, 4])).toEqual([0, 4])
+    expect(cleanPicks(['1', '3'])).toEqual([1, 3])
+    expect(cleanPicks([2, 2])).toBeUndefined()
+    expect(cleanPicks([0, 5])).toBeUndefined()
+    expect(cleanPicks([0])).toBeUndefined()
+    expect(cleanPicks('ab')).toBeUndefined()
   })
 })
 
 describe('rissa e partita', () => {
-  it('le mosse si scelgono a turno, chi apre si alterna, le mosse nuove arrivano col round', () => {
+  it('gli attacchi si scelgono a turno, prima chi ha aperto il round, poi la rissa parte da sola', () => {
     let s = startFight(draftRound(createMatch(['A', 'B'], 1, 9)), 't')
-    expect(s.fight.offers[0]).toEqual(OFFERS)
+    expect(s.phase).toBe('attacks')
+    expect(s.fight.opening?.attacks[0]).toEqual(ATTACKS)
     expect(nextChooser(s)).toBe(0)
-    // Fuori turno non si può scegliere.
-    expect(reduce(s, { type: 'choose', side: 1, choice: { pick: 0 } }).fight.choices).toEqual([null, null])
-    s = reduce(s, { type: 'choose', side: 0, choice: { pick: 0 } })
-    s = reduce(s, { type: 'choose', side: 1, choice: { custom: '  Gli ruba il cappello\n' } })
-    expect(s.fight.choices).toEqual([{ pick: 0 }, { custom: 'Gli ruba il cappello' }])
-    expect(nextChooser(s)).toBeUndefined()
-    const fresh: Suggestion[] = OFFERS.map((o) => ({ ...o, text: o.text + '!' }))
-    const { round, next } = play(s.fight.fs, judge())
-    s = reduce(s, { type: 'roundReady', round, next, offers: [fresh, fresh], token: 't2' })
-    expect(s.fight.token).toBe('t2')
-    expect(s.fight.offers[1]).toEqual(fresh)
-    expect(s.fight.choices).toEqual([null, null])
+    // Fuori turno non si può scegliere, e nemmeno due volte lo stesso attacco.
+    expect(reduce(s, { type: 'pickAttacks', side: 1, picks: [0, 1] }).fight.picks).toEqual([null, null])
+    expect(reduce(s, { type: 'pickAttacks', side: 0, picks: [1, 1] }).fight.picks).toEqual([null, null])
+    s = reduce(s, { type: 'pickAttacks', side: 0, picks: [0, 2] })
+    expect(s.phase).toBe('attacks')
     expect(nextChooser(s)).toBe(1)
+    s = reduce(s, { type: 'pickAttacks', side: 1, picks: [4, 3] })
+    expect(s.fight.picks).toEqual([[0, 2], [4, 3]])
+    expect(s.phase).toBe('battle')
+    expect(nextChooser(s)).toBeUndefined()
+    const { round, next } = play(s.fight.fs, judge())
+    s = reduce(s, { type: 'roundReady', round, next, token: 't2' })
+    expect(s.fight.token).toBe('t2')
+    expect(s.fight.rounds).toHaveLength(1)
+    // Le scelte restano per tutta la rissa.
+    expect(s.fight.picks).toEqual([[0, 2], [4, 3]])
   })
 
-  it('non si sceglie una mossa che non c’è, né una mossa inventata vuota', () => {
-    const s = startFight(draftRound(createMatch(['A', 'B'], 1, 9)))
-    expect(reduce(s, { type: 'choose', side: 0, choice: { pick: 5 } }).fight.choices[0]).toBeNull()
-    expect(reduce(s, { type: 'choose', side: 0, choice: { custom: '   ' } }).fight.choices[0]).toBeNull()
+  it('il secondo round apre l’altro giocatore', () => {
+    let s = fightToEnd(draftRound(createMatch(['A', 'B'], 3, 9)))
+    s = startFight(draftRound(reduce(s, { type: 'nextRound' })))
+    expect(nextChooser(s)).toBe(1)
   })
 
   it('qualcuno crolla, la vittoria si conta e la partita va avanti', () => {
@@ -382,38 +367,39 @@ describe('rissa e partita', () => {
 })
 
 describe('risposte dell’AI', () => {
-  it('ripara un verdetto sbagliato: colpi fuori scala, timbri inventati, pari scritto come null', () => {
-    const backup: [Suggestion[], Suggestion[]] = [OFFERS, OFFERS]
-    const j = normalizeJudgement({ scene: 'Succede di tutto', hits: [9, -2], recover: [5, 0], stamps: ['WOW', 'geniale'], winner: null }, backup)!
+  it('ripara un verdetto sbagliato: colpi fuori scala, timbri inventati, pari scritto come null, attacco usato strano', () => {
+    const j = normalizeJudgement({ scene: 'Succede di tutto', hits: [9, -2], recover: [5, 0], stamps: ['WOW', 'geniale'], winner: null, used: ['1', 7], twist: 'null' })!
     expect(j.hits).toEqual([3, 0])
     expect(j.recover).toEqual([2, 0])
     expect(j.stamps).toEqual(['CLASSICA', 'GENIALE'])
     // null non deve diventare "vince il combattente 0".
     expect(j.winner).toBeNull()
-    expect(normalizeJudgement({ scene: 'x', winner: '1' }, backup)!.winner).toBe(1)
-    expect(j.offers).toEqual(backup)
+    expect(j.used).toEqual([1, 0])
+    expect(j.twist).toBeNull()
+    expect(normalizeJudgement({ scene: 'x', winner: '1', twist: 'Il koala crolla' })!).toMatchObject({ winner: 1, used: [0, 0], twist: 'Il koala crolla' })
     // Senza scena il verdetto non vale.
-    expect(normalizeJudgement({ hits: [1, 1] }, backup)).toBeNull()
+    expect(normalizeJudgement({ hits: [1, 1] })).toBeNull()
   })
 
   it('il narratore di riserva: la furbata punisce chi carica, la carica travolge la pazzia, la pazzia spiazza la furbata', () => {
     const f = fighters()
-    const w = (a: 'aggressiva' | 'furba' | 'pazza', b: 'aggressiva' | 'furba' | 'pazza') => offlineJudgement(f, START, ['x', 'y'], [a, b], half).winner
+    const atk = (tone: 'aggressiva' | 'furba' | 'pazza'): Attack => ({ name: tone, text: `fa ${tone}`, tone })
+    const w = (a: 'aggressiva' | 'furba' | 'pazza', b: 'aggressiva' | 'furba' | 'pazza') => offlineJudgement(f, [atk(a), atk(b)], half).winner
     expect(w('furba', 'aggressiva')).toBe(0)
     expect(w('aggressiva', 'pazza')).toBe(0)
     expect(w('pazza', 'furba')).toBe(0)
     expect(w('aggressiva', 'furba')).toBe(1)
-    const j = offlineJudgement(f, START, ['Attacca', 'Scappa'], [null, null], half)
+    const j = offlineJudgement(f, [atk('furba'), atk('furba')], half)
     expect(j.scene).toContain(f[0].monster.character.name)
-    expect(j.offers[0]).toHaveLength(3)
+    expect(j.twist).toBeNull()
   })
 
-  it('il narratore di riserva prepara presentazione, eventi e prime mosse', () => {
+  it('il narratore di riserva prepara presentazione, eventi e i 5 attacchi', () => {
     const o = offlineOpening(fighters(), ARENAS[4])
     expect(o.events).toHaveLength(2)
     expect(o.events.every((e) => e.text.length > 10)).toBe(true)
-    expect(o.offers.every((x) => x.length === 3)).toBe(true)
-    expect(normalizeOpening({ title: 'T', offers: [[{ text: 'Uno', tone: 'aggressiva' }], []] }, fighters(), 'ai')!.offers[0][0].text).toBe('Uno')
+    expect(o.attacks.every((x) => x.length === ATTACKS_PER_FIGHTER)).toBe(true)
+    expect(normalizeOpening({ title: 'T', attacks: [[{ name: 'Uno', text: 'Fa uno', tone: 'aggressiva' }], []] }, fighters(), 'ai')!.attacks[0][0].name).toBe('Uno')
   })
 })
 
@@ -424,26 +410,26 @@ describe('server', () => {
       lastSent = JSON.parse(String(init.body))
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }))
     }) as unknown as typeof fetch
-  const offersOf = (p: string) => [
-    { text: `colpo ${p}`, tone: 'aggressiva' },
-    { text: `finta ${p}`, tone: 'furba' },
-    { text: `pazzia ${p}`, tone: 'pazza' },
-  ]
-  const openingAnswer = { title: 'Titolo', nicknames: ['Primo', 'Secondo'], events: ['Il trenino travolge tutti'], offers: [offersOf('0'), offersOf('1')] }
+  const attacksOf = (p: string) => ATTACKS.map((a) => ({ ...a, name: `${a.name} ${p}` }))
+  const openingAnswer = { title: 'Titolo', nicknames: ['Primo', 'Secondo'], events: ['Il trenino travolge tutti'], attacks: [attacksOf('0'), attacksOf('1')] }
   const roundAnswer = (over: object = {}) => ({
+    used: [1, 0],
+    twist: null,
     scene: 'Il primo inciampa, il secondo ne approfitta.',
     hits: [2, 0],
     recover: [0, 0],
     winner: 1,
     why: 'Ha la meglio il secondo',
-    moveNames: ['Nome0', 'Nome1'],
     stamps: ['MAH', 'GENIALE'],
     sfx: 'SBAM',
     ko: ['crolla 0', 'crolla 1'],
     summary: 'Primo round epico',
-    offers: [offersOf('0'), offersOf('1')],
     ...over,
   })
+  const chosen = (): [[Attack, Attack], [Attack, Attack]] => [
+    [attacksOf('G')[0], attacksOf('G')[2]],
+    [attacksOf('M')[3], attacksOf('M')[4]],
+  ]
 
   it('rimette a posto tutte le coppie se ha invertito l’ordine', async () => {
     const f = fighters()
@@ -452,35 +438,30 @@ describe('server', () => {
     const sent = lastSent.messages[1].content
     expect(sent.indexOf(f[1].monster.character.desc)).toBeLessThan(sent.indexOf(f[0].monster.character.desc))
     expect(sent).toContain('ai round 2 e 5')
+    expect(sent).toContain('ESATTAMENTE 5 attacchi')
     expect(o.nicknames).toEqual(['Secondo', 'Primo'])
-    expect(o.offers[0][0].text).toBe('colpo 1')
+    expect(o.attacks[0][0].name).toBe('Carica 1')
     expect(o.events).toEqual([
       { round: 2, text: 'Il trenino travolge tutti' },
       { round: 5, text: expect.any(String) },
     ])
 
-    const j = await generateRound(f, ARENAS[0], true, o, START, [], [{ text: 'mossa di Giulia', from: OFFERS[0] }, { text: 'mossa di Marco' }], o.events[0], {
-      apiKey: 'k',
-      fetch: groqAnswer(roundAnswer()),
-    })
-    // Per l'AI Marco è lo 0: il suo "hits 2" e "winner 1" vanno girati.
+    const j = await generateRound(f, ARENAS[0], true, o, START, [], chosen(), o.events[0], { apiKey: 'k', fetch: groqAnswer(roundAnswer()) })
+    // Per l'AI Marco è lo 0: "hits 2", "winner 1" e "used" vanno girati.
     expect(j.hits).toEqual([0, 2])
     expect(j.winner).toBe(0)
-    expect(j.moveNames).toEqual(['Nome1', 'Nome0'])
+    expect(j.used).toEqual([0, 1])
     expect(j.stamps).toEqual(['GENIALE', 'MAH'])
-    expect(j.offers[0][0].text).toBe('colpo 1')
     const prompt = lastSent.messages[1].content
-    expect(prompt).toMatch(/\(COMBATTENTE 0\): «mossa di Marco» \[scritta dal giocatore/)
-    expect(prompt).toMatch(/\(COMBATTENTE 1\): «mossa di Giulia» \[suggerita, tipo aggressiva/)
+    expect(prompt).toMatch(/\(COMBATTENTE 0\) ha scelto:\n\s+0\. «Potere M»/)
+    expect(prompt).toMatch(/\(COMBATTENTE 1\) ha scelto:\n\s+0\. «Carica G»/)
     expect(prompt).toContain('Il trenino travolge tutti')
   })
 
-  it('un pari resta pari anche con l’ordine invertito', async () => {
-    const j = await generateRound(fighters(), ARENAS[0], true, { title: 'T' }, START, [], [{ text: 'a' }, { text: 'b' }], undefined, {
-      apiKey: 'k',
-      fetch: groqAnswer(roundAnswer({ winner: null, hits: [1, 1] })),
-    })
+  it('un pari resta pari anche con l’ordine invertito, e dopo un colpo di scena non se ne chiede un altro', async () => {
+    const j = await generateRound(fighters(), ARENAS[0], true, { title: 'T' }, START, [], chosen(), undefined, { apiKey: 'k', fetch: groqAnswer(roundAnswer({ winner: null, hits: [1, 1] })) }, true)
     expect(j.winner).toBeNull()
+    expect(lastSent.messages[1].content).toContain('NIENTE colpo di scena')
   })
 
   it('se il modello grande ha finito i token al minuto ripiega su quello piccolo', async () => {
@@ -510,32 +491,41 @@ describe('server', () => {
     expect((await handleBattleRequest('{}', {})).status).toBe(503)
     const bad = { stage: 'opening', arena: ARENAS[0].id, fighters: [{ character: 'c-inventato' }, {}] }
     expect((await handleBattleRequest(JSON.stringify(bad), { apiKey: 'k' })).status).toBe(400)
-    expect((await handleBattleRequest(JSON.stringify({ stage: 'round', token: 'abc.def', choices: [{ pick: 0 }, { pick: 0 }] }), { apiKey: 'k' })).status).toBe(400)
+    expect((await handleBattleRequest(JSON.stringify({ stage: 'round', token: 'abc.def', picks: [[0, 1], [0, 1]] }), { apiKey: 'k' })).status).toBe(400)
   })
 
-  it('endpoint: lo stato firmato passa da un round all’altro, con memoria e mosse nuove', async () => {
+  it('endpoint: gli attacchi scelti entrano nel token al primo round e l’AI decide quale si usa', async () => {
     const s = draftRound(createMatch(['Giulia', 'Marco'], 1, 3))
     const cfg = { apiKey: 'k', rand: () => 0.9, fetch: groqAnswer(openingAnswer) }
     const open = (await handleBattleRequest(JSON.stringify({ stage: 'opening', ...battleRequest(s) }), cfg)).body as { token: string }
-    const roundCfg = { ...cfg, fetch: groqAnswer(roundAnswer({ offers: [offersOf('nuova0'), offersOf('nuova1')] })) }
-    const round = async (token: string, choices: unknown[]) => {
-      const r = await handleBattleRequest(JSON.stringify({ stage: 'round', token, choices }), roundCfg)
-      return { status: r.status, body: r.body as { token: string; round: { hp: number[]; custom: boolean[] }; offers: Suggestion[][] } }
+    const roundCfg = { ...cfg, fetch: groqAnswer(roundAnswer({ twist: 'Il koala crolla dal sonno' })) }
+    const round = async (token: string, picks?: unknown) => {
+      const r = await handleBattleRequest(JSON.stringify({ stage: 'round', token, picks }), roundCfg)
+      return { status: r.status, body: r.body as { token: string; round: { hp: number[]; moveNames: string[]; actions: string[]; twist: string | null } } }
     }
-    // Mossa che non esiste, o inventata ma vuota: rifiutate.
-    expect((await round(open.token, [{ pick: 7 }, { pick: 0 }])).status).toBe(400)
-    expect((await round(open.token, [{ custom: '  ' }, { pick: 0 }])).status).toBe(400)
-    const r1 = await round(open.token, [{ pick: 1 }, { custom: 'Gli lancia una torta' }])
+    // Scelte sbagliate o mancanti al primo round: rifiutate.
+    expect((await round(open.token, [[0, 7], [0, 1]])).status).toBe(400)
+    expect((await round(open.token)).status).toBe(400)
+    const r1 = await round(open.token, [[1, 2], [3, 4]])
     expect(r1.status).toBe(200)
-    expect(r1.body.round.custom).toEqual([false, true])
+    // L'AI ha scelto l'attacco 1 di Giulia (il secondo dei suoi) e lo 0 di Marco; rand 0.9 = ordine non invertito.
+    expect(r1.body.round.moveNames).toEqual(['Finta 0', 'Potere 1'])
+    expect(r1.body.round.actions[0]).toBe('Fa una finta')
+    expect(r1.body.round.twist).toBe('Il koala crolla dal sonno')
     expect(r1.body.round.hp.some((h) => h < 100)).toBe(true)
-    expect(r1.body.offers[0][0].text).toBe('colpo nuova0')
-    await round(r1.body.token, [{ pick: 0 }, { pick: 0 }])
-    // L'AI ricorda il round precedente e vede le mosse nuove.
-    expect(lastSent.messages[1].content).toContain('Primo round epico')
-    expect(lastSent.messages[1].content).toContain('colpo nuova')
-    // …e sa quali mosse ha già proposto, per non ripeterle.
-    expect(lastSent.messages[1].content).toMatch(/MOSSE GIÀ SUGGERITE.*«finta 0».*«finta nuova0»/)
+    // Dal secondo round le scelte vengono dal token: quelle mandate si ignorano.
+    const r2 = await round(r1.body.token, [[0, 0], [0, 0]])
+    expect(r2.status).toBe(200)
+    expect(r2.body.round.moveNames).toEqual(['Finta 0', 'Potere 1'])
+    // Niente due colpi di scena di fila, anche se l'AI insiste.
+    expect(r2.body.round.twist).toBeNull()
+    // L'AI ricorda il round precedente e vede i 2 attacchi di ciascuno.
+    const prompt = lastSent.messages[1].content
+    expect(prompt).toContain('Primo round epico')
+    expect(prompt).toContain('«Legnata 0»')
+    expect(prompt).toContain('«Pazzia 1»')
+    expect(prompt).not.toContain('«Carica 0»')
+    expect(prompt).toContain('NIENTE colpo di scena')
   })
 })
 

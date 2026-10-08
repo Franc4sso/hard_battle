@@ -1,26 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  CUSTOM_MAX,
-  GOOD_STAMPS,
-  HIT_LABEL,
-  MAX_HP,
-  choiceText,
-  cleanCustom,
-  hpState,
-  mvpOf,
-  type Choice,
-  type Monster,
-  type RoundResult,
-  type Side,
-  type Stamp,
-} from '../../../shared/battle'
+import { ATTACKS_TO_PICK, GOOD_STAMPS, HIT_LABEL, MAX_HP, hpState, mvpOf, type Monster, type Picks, type RoundResult, type Side, type Stamp } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
-import { currentEvent, matchWinner, nextChooser, other, type MatchState } from '../../game/match'
-import { Button, Footer, HpBar, MonsterCard, PLAYER_COLORS, PLAYER_TEXT, anim } from '../components'
+import { matchWinner, nextChooser, other, type MatchState } from '../../game/match'
+import { Button, Footer, HpBar, PLAYER_COLORS, PLAYER_TEXT, Portrait, anim } from '../components'
 import type { ScreenProps } from './Draft'
 
-/** Chiede presentazione e prime mosse (una sola volta per round) e le mette nello stato. */
+/** Chiede presentazione e attacchi (una sola volta per round) e li mette nello stato. */
 function useOpening({ state, dispatch }: ScreenProps) {
   const ready = state.fight.opening !== null
   useEffect(() => {
@@ -37,10 +23,42 @@ function useOpening({ state, dispatch }: ScreenProps) {
   }, [state.seed, state.round, ready])
 }
 
+const characterOf = (state: MatchState, s: Side) => (state.monsters[s] as Monster).character.name
+
+/** La scheda del VS: ritratto grande, nome, le tre carte sotto. */
+function VersusCard({ state, side, className, delay }: { state: MatchState; side: Side; className: string; delay: number }) {
+  const m = state.monsters[side] as Monster
+  const rows: [string, { name: string; cursed?: true }][] = [
+    ['Arma', m.weapon],
+    ['Carattere', m.personality],
+    ['Potere', m.power],
+  ]
+  return (
+    <div className={`panel flex min-w-0 flex-col gap-2 p-2.5 ${className}`} style={{ ...anim(delay), rotate: side ? '1.2deg' : '-1.2deg', boxShadow: `5px 5px 0 ${PLAYER_COLORS[side]}` }}>
+      <Portrait monster={m} size="lg" />
+      <span className="label truncate" style={{ color: PLAYER_TEXT[side] }}>
+        {state.players[side].name}
+      </span>
+      <b className="comic text-[22px] leading-[0.95]">{m.character.name}</b>
+      <ul className="flex flex-col gap-0.5 text-[12px] leading-snug">
+        {rows.map(([k, card]) => (
+          <li key={k}>
+            <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span>
+            {card.cursed && (
+              <span className="ml-1 rounded-md border-2 border-ink px-1 text-[9px] font-extrabold tracking-wide" style={{ background: '#FF7AC2' }}>
+                TRAPPOLA
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export function VersusScreen(props: ScreenProps) {
   const { state, dispatch } = props
-  const [m0, m1] = state.monsters as [Monster, Monster]
-  // Presentazione e prime mosse si preparano mentre i giocatori si guardano i mostri.
+  // Presentazione e attacchi si preparano mentre i giocatori si guardano i mostri.
   useOpening(props)
   useEffect(() => {
     play('versus')
@@ -53,11 +71,13 @@ export function VersusScreen(props: ScreenProps) {
         <b className="text-xl leading-tight font-extrabold">{state.arena.name}</b>
         <span className="text-sm leading-snug font-medium">{state.arena.desc}</span>
       </div>
-      <MonsterCard monster={m0} player={state.players[0].name} side={0} className="a-slide-l" style={{ ...anim(0.25), rotate: '-1.5deg' }} />
-      <div className="title-comic a-slam -my-3 text-center text-[64px] text-red" style={anim(0.7, -8)}>
-        VS
+      <div className="relative grid grid-cols-2 gap-3">
+        <VersusCard state={state} side={0} className="a-slide-l" delay={0.25} />
+        <VersusCard state={state} side={1} className="a-slide-r" delay={0.45} />
+        <div className="title-comic a-slam pointer-events-none absolute top-[38%] left-1/2 -translate-x-1/2 text-[64px] text-red" style={anim(0.7, -8)}>
+          VS
+        </div>
       </div>
-      <MonsterCard monster={m1} player={state.players[1].name} side={1} className="a-slide-r" style={{ ...anim(0.45), rotate: '1.5deg' }} />
       <Footer>
         <Button
           variant="red"
@@ -66,7 +86,7 @@ export function VersusScreen(props: ScreenProps) {
             dispatch({ type: 'fight' })
           }}
         >
-          COMBATTETE!
+          SCEGLIETE GLI ATTACCHI
         </Button>
       </Footer>
     </div>
@@ -82,7 +102,7 @@ const WAITING = [
   'Il telecronista si schiarisce la voce…',
 ]
 
-function Waiting() {
+function Waiting({ what = 'VS' }: { what?: string }) {
   const [i, setI] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setI((x) => x + 1), 1700)
@@ -90,7 +110,7 @@ function Waiting() {
   }, [])
   return (
     <div className="screen items-center justify-center gap-8 text-center">
-      <div className="title-comic a-wiggle text-[120px] text-red">VS</div>
+      <div className="title-comic a-wiggle text-[100px] text-red">{what}</div>
       <p key={i} className="panel a-pop text-lg font-extrabold" style={anim(0, i % 2 ? 1.5 : -1.5)}>
         {WAITING[i % WAITING.length]}
       </p>
@@ -98,7 +118,104 @@ function Waiting() {
   )
 }
 
-const characterOf = (state: MatchState, s: Side) => (state.monsters[s] as Monster).character.name
+// ---------- scelta degli attacchi ----------
+
+/** Ognuno sceglie 2 dei suoi 5 attacchi di nascosto, passandosi il telefono. Poi la rissa va da sola. */
+export function AttacksScreen(props: ScreenProps) {
+  const { state, dispatch } = props
+  useOpening(props)
+  const who = nextChooser(state)
+  const [covered, setCovered] = useState(true)
+  const [selected, setSelected] = useState<number[]>([])
+  const opening = state.fight.opening
+  if (!opening) return <Waiting />
+  if (who === undefined) return null
+  const me = state.players[who].name
+  const them = state.players[other(who)].name
+  const m = state.monsters[who] as Monster
+  const ready = selected.length === ATTACKS_TO_PICK
+
+  if (covered)
+    return (
+      <div key={`cover-${who}`} className="screen items-center justify-center gap-4 text-center">
+        <span className="label">Passa il telefono a</span>
+        <h2 className="title-comic a-slam text-[64px] break-all" style={{ ...anim(0.1, -3), color: PLAYER_COLORS[who] }}>
+          {me.toUpperCase()}
+        </h2>
+        <p className="panel a-rise max-w-[320px] text-[15px] leading-snug font-medium" style={anim(0.25, 1)}>
+          Scegli di nascosto {ATTACKS_TO_PICK} dei {opening.attacks[who].length} attacchi del tuo mostro. <b>{them}</b>, non guardare!
+        </p>
+        <div className="mt-auto w-full">
+          <Button
+            onClick={() => {
+              play('pass')
+              setCovered(false)
+            }}
+          >
+            SONO {me.toUpperCase()}
+          </Button>
+        </div>
+      </div>
+    )
+
+  const toggle = (i: number) => {
+    play('select')
+    vibrate(10)
+    setSelected((cur) => (cur.includes(i) ? cur.filter((x) => x !== i) : cur.length < ATTACKS_TO_PICK ? [...cur, i] : [cur[1], i]))
+  }
+  const submit = () => {
+    if (!ready) return
+    play('pick')
+    vibrate(25)
+    dispatch({ type: 'pickAttacks', side: who, picks: [selected[0], selected[1]] as Picks })
+    setSelected([])
+    setCovered(true)
+  }
+
+  return (
+    <div className="screen">
+      <div className="flex items-center gap-3">
+        <Portrait monster={m} size="md" className="a-pop" />
+        <div className="flex min-w-0 flex-col">
+          <span className="label" style={{ color: PLAYER_TEXT[who] }}>
+            {me}
+          </span>
+          <h2 className="title-comic a-slam text-[30px]" style={anim(0, -2)}>
+            I TUOI ATTACCHI
+          </h2>
+          <span className="text-[13px] leading-snug font-bold">Scegline {ATTACKS_TO_PICK}. Poi la rissa va da sola.</span>
+        </div>
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {opening.attacks[who].map((a, i) => {
+          const on = selected.includes(i)
+          return (
+            <div key={i} className="a-rise" style={anim(0.08 + i * 0.06)}>
+              <button
+                type="button"
+                className="choice flex-col items-start gap-1 py-2.5"
+                aria-pressed={on}
+                style={{ transform: `rotate(${[-0.6, 0.5, -0.4, 0.6, -0.5][i]}deg) scale(${on ? 1.02 : 1})` }}
+                onClick={() => toggle(i)}
+              >
+                <span className="flex w-full items-center justify-between gap-2">
+                  <b className="comic text-[22px] leading-none">{a.name}</b>
+                  {on && <span className="comic rounded-md bg-ink px-2 text-[14px] text-sun">SCELTO</span>}
+                </span>
+                <span className="text-[13.5px] leading-snug font-medium">{a.text}</span>
+              </button>
+            </div>
+          )
+        })}
+      </div>
+      <Footer>
+        <Button disabled={!ready} onClick={submit}>
+          {ready ? 'FATTO. NASCONDI!' : `SCEGLINE ${ATTACKS_TO_PICK - selected.length}`}
+        </Button>
+      </Footer>
+    </div>
+  )
+}
 
 // ---------- tabellone ----------
 
@@ -130,18 +247,16 @@ function HitStamp({ round, side }: { round: RoundResult; side: Side }) {
 }
 
 function FighterHp({
-  name,
-  nickname,
-  hp,
+  state,
   side,
+  hp,
   round,
   roundKey,
   hitKey,
 }: {
-  name: string
-  nickname: string
-  hp: number
+  state: MatchState
   side: Side
+  hp: number
   round?: RoundResult
   roundKey: number
   hitKey: number | null
@@ -152,12 +267,18 @@ function FighterHp({
     if (hitKey !== null && !matchMedia('(prefers-reduced-motion: reduce)').matches) ref.current?.animate(SHAKE, { duration: 380, delay: 320, iterations: 2 })
   }, [hitKey])
   const st = hpState(hp)
+  const nick = state.fight.opening?.nicknames[side] ?? ''
   return (
     <div ref={ref} className="panel relative flex min-w-0 flex-col gap-1.5 px-2.5 py-2" style={{ boxShadow: '3px 3px 0 #16141a' }}>
-      <span className="label truncate text-[11px]" style={{ color: PLAYER_TEXT[side] }}>
-        {name}
-      </span>
-      <b className="text-sm leading-tight font-extrabold">{nickname}</b>
+      <div className="flex items-center gap-2">
+        <Portrait monster={state.monsters[side] as Monster} size="sm" />
+        <div className="flex min-w-0 flex-col">
+          <span className="label truncate text-[10px]" style={{ color: PLAYER_TEXT[side] }}>
+            {state.players[side].name}
+          </span>
+          <b className="truncate text-[13px] leading-tight font-extrabold">{nick}</b>
+        </div>
+      </div>
       <HpBar hp={hp} />
       <span className="comic text-[17px] leading-none" style={{ color: STATE_COLOR[st.level] }}>
         {st.label}
@@ -168,44 +289,16 @@ function FighterHp({
 }
 
 function Scoreboard({ state, hp, round, hitKey }: { state: MatchState; hp: [number, number]; round?: RoundResult; hitKey: number }) {
-  const nick = state.fight.opening?.nicknames ?? ['', '']
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
       {([0, 1] as Side[]).map((s) => (
         <div key={s} style={{ order: s === 0 ? 0 : 2 }}>
-          <FighterHp
-            name={state.players[s].name}
-            nickname={nick[s]}
-            hp={hp[s]}
-            side={s}
-            round={round}
-            roundKey={hitKey}
-            hitKey={round && round.hits[s] > 0 ? hitKey : null}
-          />
+          <FighterHp state={state} side={s} hp={hp[s]} round={round} roundKey={hitKey} hitKey={round && round.hits[s] > 0 ? hitKey : null} />
         </div>
       ))}
       <div className="title-comic order-1 text-[36px] text-red" style={{ rotate: '-8deg', textShadow: '3px 3px 0 #16141a' }}>
         VS
       </div>
-    </div>
-  )
-}
-
-/** L'arena interviene: si vede prima di scegliere, così ci si può adattare. */
-function EventBanner({ text, compact = false }: { text: string; compact?: boolean }) {
-  useEffect(() => {
-    if (!compact) {
-      play('twist')
-      vibrate([30, 30, 30])
-    }
-  }, [compact])
-  return (
-    <div
-      className={`a-slam flex w-full flex-col gap-1 rounded-[18px] border-[3px] border-ink bg-ink text-left text-white ${compact ? 'p-2.5' : 'p-3.5'}`}
-      style={{ ...anim(compact ? 0 : 0.15, compact ? 0 : -1.5), boxShadow: '5px 5px 0 #FFB020' }}
-    >
-      <span className={`comic text-sun ${compact ? 'text-[17px]' : 'text-[22px]'}`}>L’ARENA INTERVIENE!</span>
-      <span className={`${compact ? 'text-[13px]' : 'text-[15px]'} leading-snug font-medium`}>{text}</span>
     </div>
   )
 }
@@ -222,159 +315,16 @@ function StampBadge({ stamp, side, delay }: { stamp: Stamp; side: Side; delay: n
   )
 }
 
-// ---------- scelta della mossa ----------
+// ---------- la rissa va da sola ----------
 
-/** Ognuno sceglie la mossa di nascosto, passandosi il telefono: 3 suggerite o una inventata. */
-function MovePicker({ state, dispatch }: ScreenProps) {
-  const who = nextChooser(state)
-  const [covered, setCovered] = useState(true)
-  const [selected, setSelected] = useState<number | 'custom' | null>(null)
-  const [draft, setDraft] = useState('')
-  if (who === undefined) return null
-  const f = state.fight
-  const me = state.players[who].name
-  const them = state.players[other(who)].name
-  const foe = other(who)
-  const last = f.rounds.at(-1)
-  const roundNo = f.rounds.length + 1
-  const event = currentEvent(state)
-  const custom = cleanCustom(draft)
-  const ready = selected === 'custom' ? custom.length > 0 : selected !== null
+const MIN_REVEAL_MS = 1400
+/** Quanto resta in vista un round prima di passare al prossimo da solo. */
+const AUTO_NEXT_MS = 9000
 
-  if (covered)
-    return (
-      <div key={`cover-${who}-${roundNo}`} className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-        <span className="comic a-pop rounded-full bg-ink px-5 py-1 text-[22px] text-sun">ROUND {roundNo}</span>
-        {event && <EventBanner text={event.text} />}
-        <span className="label">Passa il telefono a</span>
-        <h2 className="title-comic a-slam text-[64px] break-all" style={{ ...anim(0.1, -3), color: PLAYER_COLORS[who] }}>
-          {me.toUpperCase()}
-        </h2>
-        <p className="panel a-rise max-w-[320px] text-[15px] leading-snug font-medium" style={anim(0.25, 1)}>
-          Scegli la tua mossa di nascosto. <b>{them}</b>, non guardare!
-        </p>
-        <div className="mt-auto w-full">
-          <Button
-            onClick={() => {
-              play('pass')
-              setCovered(false)
-            }}
-          >
-            SONO {me.toUpperCase()}
-          </Button>
-        </div>
-      </div>
-    )
-
-  const submit = () => {
-    if (!ready || selected === null) return
-    const choice: Choice = selected === 'custom' ? { custom } : { pick: selected }
-    play('pick')
-    vibrate(25)
-    dispatch({ type: 'choose', side: who, choice })
-    setSelected(null)
-    setDraft('')
-    setCovered(true)
-  }
-
-  return (
-    <div className="flex flex-1 flex-col gap-3">
-      <h2 className="title-comic a-slam text-[38px]" style={anim(0, -2)}>
-        COSA FA <span style={{ color: PLAYER_COLORS[who] }}>{characterOf(state, who).toUpperCase()}</span>?
-      </h2>
-      {event && <EventBanner text={event.text} compact />}
-      <div className="panel a-rise flex flex-col gap-1 px-3 py-2.5" style={anim(0.05)}>
-        <span className="label text-[11px]">
-          Contro {characterOf(state, foe)} · {hpState(f.fs.hp[foe]).label.toLowerCase()}
-        </span>
-        <span className="text-[14px] leading-snug font-semibold">
-          {last ? (
-            <>
-              L’ultima volta: <i>«{last.actions[foe]}»</i>
-            </>
-          ) : (
-            'Primo round: nessuno sa ancora cosa farà.'
-          )}
-        </span>
-      </div>
-      {f.offers[who].map((o, i) => {
-        const on = selected === i
-        return (
-          <div key={`${roundNo}-${i}`} className="a-rise" style={anim(0.1 + i * 0.07)}>
-            <button
-              type="button"
-              className="choice flex-col items-start gap-1.5"
-              aria-pressed={on}
-              style={{
-                borderRadius: i % 2 ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-                transform: `rotate(${[-0.8, 0.6, -0.4][i] ?? 0}deg) scale(${on ? 1.02 : 1})`,
-                ...(o.finisher && !on ? { background: '#E9D8FF', boxShadow: '6px 6px 0 #8B2CF5' } : {}),
-              }}
-              onClick={() => {
-                play('select')
-                vibrate(10)
-                setSelected(i)
-              }}
-            >
-              {o.finisher && <span className="comic rounded-md bg-ink px-2 text-[15px] text-sun">COLPO FINALE</span>}
-              <span className="text-[17px] leading-snug font-bold">{o.text}</span>
-            </button>
-          </div>
-        )
-      })}
-      <div className="a-rise" style={anim(0.35)}>
-        {selected === 'custom' ? (
-          <div className="panel flex flex-col gap-2" style={{ background: '#FFE14D' }}>
-            <label htmlFor="custom-move" className="label">
-              La tua mossa
-            </label>
-            <textarea
-              id="custom-move"
-              className="field resize-none text-[16px] leading-snug"
-              style={{ fontWeight: 600 }}
-              rows={3}
-              maxLength={CUSTOM_MAX}
-              autoFocus
-              placeholder={`Es. "Gli ruba il ${(state.monsters[foe] as Monster).weapon.name.toLowerCase()} e lo usa contro di lui"`}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <span className="text-[12px] leading-snug font-bold text-mute">
-              {draft.length}/{CUSTOM_MAX} · Il giudice premia le idee furbe e fischia chi bara.
-            </span>
-          </div>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => {
-              play('select')
-              setSelected('custom')
-            }}
-          >
-            ✍️ Inventa la tua mossa
-          </button>
-        )}
-      </div>
-      <div className="mt-auto pt-1">
-        <Button disabled={!ready} onClick={submit}>
-          FATTO. NASCONDI!
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-// ---------- scontro e racconto ----------
-
-const MIN_REVEAL_MS = 1600
-
-/** Svela le due mosse; intanto il server giudica il round. */
-function Clash({ state, dispatch }: ScreenProps) {
-  const f = state.fight
-  const choices = f.choices as [Choice, Choice]
+/** Chiede il round al server; intanto il pubblico aspetta. */
+function RoundLoader({ state, dispatch }: ScreenProps) {
   const [waited, setWaited] = useState(false)
-
+  const roundNo = state.fight.rounds.length + 1
   useEffect(() => {
     play('versus')
     vibrate([40, 60, 40])
@@ -400,19 +350,13 @@ function Clash({ state, dispatch }: ScreenProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
   return (
-    <div className="flex flex-1 flex-col gap-4">
-      <span className="comic self-center rounded-full bg-ink px-5 py-1 text-[22px] text-sun">MOSSE SVELATE</span>
-      {([0, 1] as Side[]).map((s) => (
-        <div key={s} className={`bubble a-slam flex flex-col gap-1 ${s === 0 ? 'bubble-l' : 'bubble-r'}`} style={anim(0.15 + s * 0.35, s ? 2 : -2)}>
-          <span className="label" style={{ color: PLAYER_TEXT[s] }}>
-            {characterOf(state, s)}
-          </span>
-          <span className="text-[16px] leading-snug font-bold">{choiceText(f.offers[s], choices[s])}</span>
-        </div>
-      ))}
-      <p className="a-wiggle mt-2 self-center text-center text-[15px] font-extrabold">{waited ? 'Il giudice sta guardando il replay…' : 'SCONTRO!'}</p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+      <span className="comic a-pop rounded-full bg-ink px-5 py-1 text-[22px] text-sun">ROUND {roundNo}</span>
+      <div className="title-comic a-wiggle text-[72px] text-red">SBAM!</div>
+      <p className="a-rise text-[15px] font-extrabold" style={anim(0.2)}>
+        {waited ? 'Il giudice sta guardando il replay…' : 'Si menano…'}
+      </p>
     </div>
   )
 }
@@ -427,6 +371,11 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
           <b className="text-sun">L’arena:</b> {round.event}
         </div>
       )}
+      {round.twist && (
+        <div className="a-slam rounded-[14px] border-[3px] border-dashed border-ink px-3 py-2 text-[13.5px] leading-snug font-medium" style={{ ...anim(0.05, -1), background: '#FF7AC2' }}>
+          <b className="comic text-[17px] tracking-wide">COLPO DI SCENA!</b> {round.twist}
+        </div>
+      )}
       {([0, 1] as Side[]).map((s) => (
         <div
           key={s}
@@ -437,7 +386,6 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
             <span className="flex min-w-0 flex-col">
               <span className="label text-[11px]" style={{ color: PLAYER_TEXT[s] }}>
                 {characterOf(state, s)}
-                {round.custom[s] ? ' · mossa inventata' : ''}
               </span>
               <b className="comic text-[26px] leading-none">{round.moveNames[s]}</b>
             </span>
@@ -466,10 +414,33 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
   )
 }
 
+/** Conto alla rovescia verso il round dopo: si può saltare toccando il bottone. */
+function AutoNext({ ms, onDone, label }: { ms: number; onDone(): void; label: string }) {
+  const [left, setLeft] = useState(ms)
+  useEffect(() => {
+    const start = Date.now()
+    const t = setInterval(() => {
+      const l = Math.max(0, ms - (Date.now() - start))
+      setLeft(l)
+      if (l === 0) {
+        clearInterval(t)
+        onDone()
+      }
+    }, 250)
+    return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return (
+    <Button variant="red" onClick={onDone}>
+      {label} · {Math.ceil(left / 1000)}
+    </Button>
+  )
+}
+
 export function BattleScreen(props: ScreenProps) {
   const { state, dispatch } = props
   const { opening, rounds, end } = state.fight
-  // -1 = presentazione; altrimenti il round che si sta guardando (null = si scelgono le mosse).
+  // -1 = presentazione; altrimenti il round che si sta guardando (null = si gioca il prossimo).
   const [viewing, setViewing] = useState<number | null>(rounds.length ? rounds.length - 1 : -1)
   useOpening(props)
 
@@ -488,7 +459,7 @@ export function BattleScreen(props: ScreenProps) {
 
   const shownRound = viewing !== null && viewing >= 0 ? rounds[viewing] : undefined
   const hp: [number, number] = shownRound ? shownRound.hp : viewing === -1 ? [MAX_HP, MAX_HP] : state.fight.fs.hp
-  const choosing = viewing === null && nextChooser(state) !== undefined
+  const picked = (s: Side) => (state.fight.picks[s] ?? []).map((k) => opening.attacks[s][k].name)
 
   return (
     <div className="screen">
@@ -505,14 +476,25 @@ export function BattleScreen(props: ScreenProps) {
                 {opening.intro}
               </div>
             )}
-            <ul className="panel a-rise flex flex-col gap-1.5 px-3.5 py-3 text-[14px] leading-snug font-medium" style={anim(0.5)}>
-              <li>Ogni round scegli di nascosto una delle 3 mosse suggerite, oppure inventane una tu.</li>
-              <li>Le due mosse avvengono nello stesso istante: il giudice racconta la scena e decide chi ha la meglio.</li>
-              <li>Le mosse cambiano round dopo round, a seconda di come va la rissa.</li>
-              <li>Si combatte finché qualcuno crolla.</li>
-            </ul>
+            <div className="grid grid-cols-2 gap-2">
+              {([0, 1] as Side[]).map((s) => (
+                <div key={s} className="panel a-rise flex flex-col gap-1 px-3 py-2.5" style={{ ...anim(0.5 + s * 0.1, s ? 0.8 : -0.8), boxShadow: `4px 4px 0 ${PLAYER_COLORS[s]}` }}>
+                  <span className="label text-[10px]" style={{ color: PLAYER_TEXT[s] }}>
+                    {characterOf(state, s)}
+                  </span>
+                  {picked(s).map((n) => (
+                    <b key={n} className="comic text-[18px] leading-none">
+                      {n}
+                    </b>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <p className="a-rise text-center text-[14px] leading-snug font-bold" style={anim(0.7)}>
+              Da qui in poi non si tocca niente: il giudice sceglie gli attacchi, racconta e decide. Si combatte finché qualcuno crolla.
+            </p>
             {opening.source === 'offline' && (
-              <p className="a-rise text-center text-[13px] font-bold" style={anim(0.7)}>
+              <p className="a-rise text-center text-[13px] font-bold" style={anim(0.8)}>
                 AI non raggiungibile: stasera racconta il narratore di riserva.
               </p>
             )}
@@ -537,14 +519,18 @@ export function BattleScreen(props: ScreenProps) {
             <RoundView state={state} round={shownRound} index={viewing as number} />
           </div>
           <Footer>
-            <Button variant="red" onClick={() => (end ? dispatch({ type: 'verdict' }) : setViewing(null))}>
-              {end ? 'VERDETTO!' : 'PROSSIMO ROUND'}
-            </Button>
+            {end ? (
+              <Button variant="red" onClick={() => dispatch({ type: 'verdict' })}>
+                VERDETTO!
+              </Button>
+            ) : (
+              <AutoNext key={viewing} ms={AUTO_NEXT_MS} label="PROSSIMO ROUND" onDone={() => setViewing(null)} />
+            )}
           </Footer>
         </>
       )}
 
-      {viewing === null && (choosing ? <MovePicker {...props} /> : <Clash key={`clash-${count}`} {...props} />)}
+      {viewing === null && <RoundLoader key={`load-${count}`} {...props} />}
     </div>
   )
 }
@@ -560,9 +546,10 @@ export function VerdictScreen({ state, dispatch }: ScreenProps) {
   }, [])
   return (
     <div className="screen">
-      <div className="mt-2 flex flex-col items-center gap-1 text-center">
+      <div className="mt-2 flex flex-col items-center gap-2 text-center">
+        <Portrait monster={state.monsters[w] as Monster} size="lg" className="a-pop max-w-[220px]" />
         <span className="pill a-pop">{opening!.nicknames[w].toUpperCase()}</span>
-        <h1 className="title-comic a-slam text-[68px]" style={anim(0.15, -3)}>
+        <h1 className="title-comic a-slam text-[60px]" style={anim(0.15, -3)}>
           VINCE
           <br />
           {state.players[w].name.toUpperCase()}!
@@ -579,7 +566,7 @@ export function VerdictScreen({ state, dispatch }: ScreenProps) {
       {mvp && (
         <div className="a-rise flex flex-col gap-1 rounded-[18px] border-[3px] border-ink bg-ink p-3.5 text-white" style={{ ...anim(0.55, -1), boxShadow: '5px 5px 0 #FF4B3E' }}>
           <span className="comic text-xl text-sun">
-            MOSSA MVP: <span className="text-white">{mvp}</span>
+            ATTACCO MVP: <span className="text-white">{mvp}</span>
           </span>
           <span className="text-[13px] font-medium">
             {rounds.length} round · {opening!.title}
@@ -621,12 +608,15 @@ export function FinalScreen({ state, onRematch, onNewPlayers, onExit }: ScreenPr
       </div>
       <ul className="flex flex-col gap-2.5">
         {state.history.map((h, i) => (
-          <li key={h.round} className="panel a-rise flex flex-col gap-0.5 px-3.5 py-2.5" style={anim(0.5 + i * 0.08, i % 2 ? 0.8 : -0.8)}>
-            <span className="label text-mute">Round {h.round}</span>
-            <b className="leading-tight font-extrabold">{h.title}</b>
-            <span className="text-[13px] font-medium">
-              Vince <b style={{ color: PLAYER_TEXT[h.winner] }}>{state.players[h.winner].name}</b> con {h.nicknames[h.winner] || h.monsters[h.winner].character.name}
-              {h.mvp ? ` · ${h.mvp}` : ''}
+          <li key={h.round} className="panel a-rise flex items-center gap-3 px-3.5 py-2.5" style={anim(0.5 + i * 0.08, i % 2 ? 0.8 : -0.8)}>
+            <Portrait monster={h.monsters[h.winner]} size="sm" />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="label text-mute">Round {h.round}</span>
+              <b className="leading-tight font-extrabold">{h.title}</b>
+              <span className="text-[13px] font-medium">
+                Vince <b style={{ color: PLAYER_TEXT[h.winner] }}>{state.players[h.winner].name}</b> con {h.nicknames[h.winner] || h.monsters[h.winner].character.name}
+                {h.mvp ? ` · ${h.mvp}` : ''}
+              </span>
             </span>
           </li>
         ))}

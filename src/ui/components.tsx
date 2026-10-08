@@ -1,7 +1,7 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react'
 import { play } from '../audio/sfx'
 import { markPortrait, portraitState, portraitUrl } from '../game/portraits'
-import type { Card, Slot } from '../../shared/cards'
+import type { Slot } from '../../shared/cards'
 import type { Monster, Side } from '../../shared/battle'
 
 export const PLAYER_COLORS: Record<Side, string> = { 0: '#FF4B3E', 1: '#2F7BFF' }
@@ -60,7 +60,7 @@ export function HpBar({ hp }: { hp: number }) {
  * Un ritratto fallito si ritenta una volta a ogni nuova schermata (il server
  * non mette in cache i fallimenti, quindi è un vero secondo tentativo).
  */
-export function Portrait({ monster, size = 'md', className = '' }: { monster: Pick<Monster, 'character' | 'weapon'>; size?: 'sm' | 'md'; className?: string }) {
+export function Portrait({ monster, size = 'md', className = '' }: { monster: Pick<Monster, 'character' | 'weapon'>; size?: 'sm' | 'md' | 'lg'; className?: string }) {
   const url = portraitUrl(monster)
   const initial = () => (portraitState(monster) === 'ready' ? 'ready' : 'loading')
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>(initial)
@@ -85,37 +85,6 @@ export function Portrait({ monster, size = 'md', className = '' }: { monster: Pi
         />
       )}
       {state !== 'ready' && <span className="comic text-[13px] leading-tight">{state === 'failed' ? 'SENZA\nRITRATTO' : 'RITRATTO\nIN ARRIVO'}</span>}
-    </div>
-  )
-}
-
-export function MonsterCard({ monster, player, side, className = '', style }: { monster: Monster; player: string; side: Side; className?: string; style?: CSSProperties }) {
-  const rows: [string, Card][] = [
-    ['Arma', monster.weapon],
-    ['Carattere', monster.personality],
-    ['Potere', monster.power],
-  ]
-  return (
-    <div className={`panel flex gap-3 ${className}`} style={style}>
-      <Portrait monster={monster} />
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <span className="label" style={{ color: PLAYER_TEXT[side] }}>
-          {player}
-        </span>
-        <b className="comic text-[26px] leading-none">{monster.character.name}</b>
-        <ul className="flex flex-col gap-1 text-[13px] leading-snug">
-          {rows.map(([k, card]) => (
-            <li key={k}>
-              <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span>
-              {card.cursed && (
-                <span className="ml-1.5 rounded-md border-2 border-ink px-1 text-[10px] font-extrabold tracking-wide" style={{ background: '#FF7AC2' }}>
-                  TRAPPOLA
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      </div>
     </div>
   )
 }

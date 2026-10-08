@@ -1,8 +1,8 @@
 import { isDeckMode, type DeckMode } from '../../shared/cards'
 import type { MatchState } from './match'
 
-// v5: rissa a frasi suggerite, le partite salvate prima non sono compatibili.
-const MATCH_KEY = 'rissa:match:v5'
+// v6: rissa a 2 attacchi su 5 scelti prima, le partite salvate prima non sono compatibili.
+const MATCH_KEY = 'rissa:match:v6'
 const PREFS_KEY = 'rissa:prefs:v1'
 
 export interface Prefs {
@@ -34,7 +34,7 @@ function write(key: string, value: unknown) {
 
 export const loadMatch = (): MatchState | undefined => {
   const m = read<MatchState>(MATCH_KEY)
-  return m?.version === 5 ? m : undefined
+  return m?.version === 6 ? m : undefined
 }
 export const saveMatch = (m: MatchState | undefined) => write(MATCH_KEY, m)
 

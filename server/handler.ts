@@ -1,21 +1,20 @@
 import { deckOf, findCard, type Card, type Slot } from '../shared/cards'
 import {
   START,
-  cleanCustom,
-  dedupeOffers,
+  cleanPicks,
   eventAt,
-  fixFinishers,
-  offlineOffers,
   playRound,
   scheduleEvents,
+  type Attack,
   type BattleRequest,
   type FightState,
   type Fighter,
   type Monster,
+  type Moves,
   type Opening,
-  type Suggestion,
+  type Picks,
 } from '../shared/battle'
-import { generateOpening, generateRound, type AiConfig, type PlayedMove } from './groq'
+import { generateOpening, generateRound, type AiConfig } from './groq'
 import { sign, verify } from './token'
 
 export interface HandlerResult {
@@ -31,26 +30,27 @@ export interface HandlerConfig extends Partial<AiConfig> {
 
 /**
  * Netlify non ha un database: lo stato della rissa viaggia firmato tra server e
- * telefono a ogni round. La firma impedisce di modificarlo (niente testo
- * arbitrario nel prompt oltre alla mossa scritta, niente vita truccata).
+ * telefono a ogni round. La firma impedisce di modificarlo (niente attacchi
+ * inventati, niente vita truccata).
  */
 interface FightToken {
-  v: 3
+  v: 4
   req: BattleRequest
   opening: Pick<Opening, 'title' | 'events'>
+  /** I 5 attacchi di ciascuno, come li ha scritti l'AI. */
+  attacks: [Attack[], Attack[]]
+  /** I 2 scelti da ciascuno: arrivano col primo round e poi restano. */
+  picks: [Picks, Picks] | null
   fs: FightState
-  /** Le mosse suggerite per il round da giocare: si può scegliere solo tra queste (o scriverne una). */
-  offers: [Suggestion[], Suggestion[]]
   /** Riassunti degli ultimi round, per dare memoria all'AI. */
   log: string[]
-  /** Le mosse suggerite nei round precedenti, perché l'AI non le riproponga. */
-  seen: string[]
+  /** Nel round prima c'è stato un colpo di scena: non due di fila. */
+  lastTwist: boolean
   done: boolean
 }
 
 const SLOT_KEYS: Slot[] = ['character', 'weapon', 'personality', 'power']
 const LOG_SIZE = 5
-const SEEN_SIZE = 24
 
 function cleanName(v: unknown, fallback: string): string {
   const s = typeof v === 'string' ? v.replace(/[\u0000-\u001f<>{}"]/g, '').trim().slice(0, 20) : ''
@@ -88,32 +88,23 @@ export function parseRequest(body: unknown): { fighters: [Fighter, Fighter]; are
   return { fighters: pair, arena, req: { arena: arena.id, fighters: [ids(pair[0]), ids(pair[1])] } }
 }
 
-/** Le mosse scelte: l'indice di una suggerita o una frase scritta dal giocatore (ripulita). */
-function parseChoices(v: unknown, t: FightToken): [PlayedMove, PlayedMove] | undefined {
+/** Gli attacchi scelti da entrambi: due indici distinti a testa. */
+function parsePicks(v: unknown): [Picks, Picks] | undefined {
   if (!Array.isArray(v) || v.length !== 2) return undefined
-  const out: PlayedMove[] = []
-  for (const [side, c] of (v as Record<string, unknown>[]).entries()) {
-    if (Number.isInteger(c?.pick)) {
-      const from = t.offers[side]?.[c.pick as number]
-      if (!from) return undefined
-      out.push({ text: from.text, from })
-    } else {
-      const text = cleanCustom(c?.custom)
-      if (!text) return undefined
-      out.push({ text })
-    }
-  }
-  return out as [PlayedMove, PlayedMove]
+  const a = cleanPicks(v[0])
+  const b = cleanPicks(v[1])
+  return a && b ? [a, b] : undefined
 }
+
+/** Basta una carta sporca sul ring e il narratore può andarci pesante. */
+export const hasDirtyCard = (fighters: [Fighter, Fighter]) => fighters.some((f) => SLOT_KEYS.some((s) => f.monster[s].dirty))
 
 /**
  * POST /api/battle
  * - { stage: "opening", arena, fighters } → { opening, token }
- * - { stage: "round", token, choices: [{pick: n} | {custom: "..."}, …] } → { round, next, offers, token }
+ * - { stage: "round", token, picks: [[a,b],[c,d]] } → { round, next, token }
+ *   (picks servono solo al primo round: poi restano nel token).
  */
-/** Basta una carta sporca sul ring e il narratore può andarci pesante. */
-export const hasDirtyCard = (fighters: [Fighter, Fighter]) => fighters.some((f) => SLOT_KEYS.some((s) => f.monster[s].dirty))
-
 export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Promise<HandlerResult> {
   if (!cfg.apiKey) return { status: 503, body: { error: 'missing_key' } }
   const base: AiConfig = { ...cfg, apiKey: cfg.apiKey }
@@ -129,24 +120,22 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
   try {
     if (body?.stage === 'round') {
       const t = verify<FightToken>(body.token, secret)
-      const parsed = t?.v === 3 && !t.done ? parseRequest(t.req) : undefined
-      const moves = t && parsed ? parseChoices(body.choices, t) : undefined
-      if (!t || !parsed || !moves) return { status: 400, body: { error: 'bad_request' } }
+      const parsed = t?.v === 4 && !t.done ? parseRequest(t.req) : undefined
+      const picks = t && parsed ? (t.picks ?? parsePicks(body.picks)) : undefined
+      if (!t || !parsed || !picks) return { status: 400, body: { error: 'bad_request' } }
+      const chosen = [0, 1].map((s) => picks[s].map((k) => t.attacks[s][k])) as [[Attack, Attack], [Attack, Attack]]
       const event = eventAt(t.opening.events, t.fs.round + 1)
-      // L'ordine in cui l'AI vede i due combattenti si rimescola a ogni round: i modelli tendono a favorire uno dei due.
-      const seen = [...(t.seen ?? []), ...t.offers.flat().map((o) => o.text)].slice(-SEEN_SIZE)
       const ai = { ...base, dirty: hasDirtyCard(parsed.fighters) }
-      const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, moves, event, ai, seen)
+      // L'ordine in cui l'AI vede i due combattenti si rimescola a ogni round: i modelli tendono a favorire uno dei due.
+      const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, chosen, event, ai, t.lastTwist)
+      const used = [chosen[0][judgement.used[0]], chosen[1][judgement.used[1]]]
+      const moves: Moves = { names: [used[0].name, used[1].name], actions: [used[0].text, used[1].text] }
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
-      const actions: [string, string] = [moves[0].text, moves[1].text]
-      const custom: [boolean, boolean] = [!moves[0].from, !moves[1].from]
-      const { round, next } = playRound(t.fs, actions, custom, judgement, names, rand, event)
+      const twist = t.lastTwist ? null : judgement.twist
+      const { round, next } = playRound(t.fs, moves, { ...judgement, twist }, names, rand, event)
       const log = [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE)
-      // Le mosse quasi uguali a quelle già viste si sostituiscono con quelle di riserva.
-      const backup: [Suggestion[], Suggestion[]] = [offlineOffers(parsed.fighters, 0, next), offlineOffers(parsed.fighters, 1, next)]
-      const offers = fixFinishers(dedupeOffers(judgement.offers, seen, backup), next)
-      const token = sign({ ...t, fs: next, offers, log, seen, done: !!round.end } satisfies FightToken, secret)
-      return { status: 200, body: { round, next, offers, token } }
+      const token = sign({ ...t, picks, fs: next, log, lastTwist: !!twist, done: !!round.end } satisfies FightToken, secret)
+      return { status: 200, body: { round, next, token } }
     }
 
     const parsed = parseRequest(body)
@@ -154,13 +143,14 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
     const ai = { ...base, dirty: hasDirtyCard(parsed.fighters) }
     const opening = await generateOpening(parsed.fighters, parsed.arena, rand() < 0.5, scheduleEvents(rand), ai)
     const state: FightToken = {
-      v: 3,
+      v: 4,
       req: parsed.req,
       opening: { title: opening.title, events: opening.events },
+      attacks: opening.attacks,
+      picks: null,
       fs: START,
-      offers: opening.offers,
       log: [],
-      seen: [],
+      lastTwist: false,
       done: false,
     }
     return { status: 200, body: { opening, token: sign(state, secret) } }

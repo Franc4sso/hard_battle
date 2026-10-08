@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { SLOTS, type Card } from '../../../shared/cards'
 import type { Monster } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { championsOf, loadBestiary } from '../../game/bestiary'
 import { currentSlot, currentTurn, draftSlots, other, type Action, type MatchState } from '../../game/match'
 import { preloadPortrait } from '../../game/portraits'
-import { Button, Footer, Icon, LETTER_COLORS, SLOT_INFO, Sheet, anim } from '../components'
+import { Button, Footer, Icon, LETTER_COLORS, Portrait, SLOT_INFO, Sheet, anim } from '../components'
 
 export interface ScreenProps {
   state: MatchState
@@ -247,23 +247,28 @@ export function ReadyScreen({ state, dispatch }: ScreenProps) {
   const last = state.turn === 3
   const next = other(state.picker)
   const gift = state.gifts[state.picker]
+  // Il mostro è completo: il ritratto parte adesso e compare qui mentre lo si legge.
+  useEffect(() => preloadPortrait(m), [m])
   return (
     <div className="screen">
-      <h1 className="title-comic a-slam mt-4 text-[54px]" style={anim(0, -2)}>
-        {state.champion ? (
-          <>
-            IL CAMPIONE
-            <br />
-            TORNA!
-          </>
-        ) : (
-          <>
-            ECCO IL TUO
-            <br />
-            MOSTRO!
-          </>
-        )}
-      </h1>
+      <div className="mt-2 flex items-center gap-3">
+        <Portrait monster={m} size="md" className="a-pop" />
+        <h1 className="title-comic a-slam text-[44px]" style={anim(0, -2)}>
+          {state.champion ? (
+            <>
+              IL CAMPIONE
+              <br />
+              TORNA!
+            </>
+          ) : (
+            <>
+              ECCO IL TUO
+              <br />
+              MOSTRO!
+            </>
+          )}
+        </h1>
+      </div>
       <div className="panel a-pop flex flex-col gap-3" style={anim(0.15, 1)}>
         {SLOTS.map((s, i) => {
           const isGift = s === gift.slot
@@ -289,8 +294,6 @@ export function ReadyScreen({ state, dispatch }: ScreenProps) {
         <Button
           onClick={() => {
             play('pass')
-            // Il ritratto si genera adesso, mentre l'altro compone il suo: al VS è già pronto.
-            preloadPortrait(m)
             dispatch({ type: 'confirm' })
           }}
         >

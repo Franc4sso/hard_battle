@@ -243,6 +243,12 @@ body {
     border-radius: 10px;
     font-size: 0;
   }
+  /* Grande: tutta la larghezza del contenitore, quadrato. */
+  .portrait-lg {
+    width: 100%;
+    max-width: 100%;
+    aspect-ratio: 1;
+  }
   .portrait img {
     position: absolute;
     inset: 0;

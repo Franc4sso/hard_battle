@@ -3,13 +3,17 @@ import { deckOf, findCard, type Card } from '../shared/cards'
 /**
  * Ritratto del mostro: un'immagine per coppia personaggio + arma, generata da
  * Cloudflare Workers AI (FLUX schnell, piano gratuito) e messa in cache per sempre.
- * Il telefono chiede GET /api/portrait/<personaggio>/<arma> e riceve un JPEG.
+ * Se Cloudflare rifiuta (quota del giorno finita) si riprova su Pollinations.
+ * Il telefono chiede GET /api/portrait/<personaggio>/<arma> e riceve l'immagine.
  */
 export interface PortraitConfig {
   accountId?: string
   token?: string
   /** Modello Workers AI; schnell è veloce e gratuito. */
   model?: string
+  /** Riserva: chiave Pollinations (stesso FLUX schnell), usata quando Cloudflare rifiuta, per esempio a quota finita. */
+  pollinationsKey?: string
+  pollinationsModel?: string
   /** Chiave Groq: se c'è, le carte vengono prima tradotte in inglese (FLUX non capisce "ciabatta della nonna"). */
   groqKey?: string
   groqModel?: string
@@ -29,6 +33,7 @@ export interface PortraitResult {
 }
 
 export const DEFAULT_PORTRAIT_MODEL = '@cf/black-forest-labs/flux-1-schnell'
+export const DEFAULT_POLLINATIONS_MODEL = 'black-forest-labs/flux.1-schnell'
 /** Modello piccolo e veloce: deve solo tradurre due righe. */
 export const DEFAULT_TRANSLATE_MODEL = 'openai/gpt-oss-20b'
 // Le funzioni Netlify gratuite si fermano a 10 s: pochi passi di diffusione e traduzione rapida.
@@ -36,6 +41,12 @@ export const DEFAULT_TRANSLATE_MODEL = 'openai/gpt-oss-20b'
 // 9,6 neurons (su ~58 a immagine): con 4 ne escono ~170 al giorno gratis, con 5 solo ~148.
 const STEPS = 4
 const IMAGE_TIMEOUT_MS = 8_000
+/** Tutta la richiesta deve stare sotto i 10 s di Netlify, riserva compresa. */
+const DEADLINE_MS = 9_500
+/** Con la riserva accesa Cloudflare ha meno tempo, così a Pollinations ne resta. */
+const CF_TIMEOUT_WITH_FALLBACK_MS = 4_500
+/** Sotto questo margine non vale la pena tentare la riserva. */
+const MIN_FALLBACK_MS = 1_500
 const TRANSLATE_TIMEOUT_MS = 3_000
 
 /**
@@ -160,20 +171,23 @@ export function parsePortraitIds(characterId: unknown, weaponId: unknown): { cha
 
 export type GenerateResult = { image: Uint8Array } | { reason: string }
 
+const describe = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const failure = (service: string, e: unknown) => (e instanceof Error && e.name === 'TimeoutError' ? `${service}_timeout` : `${service}_unreachable`)
+
 /**
  * Chiede l'immagine a Cloudflare. Se rifiuta restituisce il motivo (status e
  * codice d'errore di Cloudflare) e lo scrive nei log della funzione: senza,
  * un 502 non dice se è finita la quota del giorno, il token è scaduto o altro.
  */
-export async function generatePortrait(cfg: PortraitConfig, prompt: string): Promise<GenerateResult> {
-  if (!cfg.accountId || !cfg.token) return { reason: 'missing_key' }
+export async function generateCloudflare(cfg: PortraitConfig, prompt: string, timeoutMs = IMAGE_TIMEOUT_MS): Promise<GenerateResult> {
+  if (!cfg.accountId || !cfg.token) return { reason: 'cloudflare_missing_key' }
   const doFetch = cfg.fetch ?? fetch
   try {
     const res = await doFetch(`https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/ai/run/${cfg.model || DEFAULT_PORTRAIT_MODEL}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.token}` },
       body: JSON.stringify({ prompt, steps: STEPS }),
-      signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     const text = await res.text()
     let json: { result?: { image?: unknown }; errors?: { code?: number; message?: string }[] } = {}
@@ -189,13 +203,71 @@ export async function generatePortrait(cfg: PortraitConfig, prompt: string): Pro
     console.error(`[portrait] ${reason}: ${err?.message ?? text.slice(0, 300)}`)
     return { reason }
   } catch (e) {
-    const reason = e instanceof Error && e.name === 'TimeoutError' ? 'cloudflare_timeout' : 'cloudflare_unreachable'
-    console.error(`[portrait] ${reason}: ${e instanceof Error ? e.message : String(e)}`)
+    const reason = failure('cloudflare', e)
+    console.error(`[portrait] ${reason}: ${describe(e)}`)
     return { reason }
   }
 }
 
-const IMAGE_HEADERS = { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=31536000, immutable' }
+/** La riserva: Pollinations, API in stile OpenAI, risponde con l'immagine in base64. */
+export async function generatePollinations(cfg: PortraitConfig, prompt: string, timeoutMs: number): Promise<GenerateResult> {
+  if (!cfg.pollinationsKey) return { reason: 'pollinations_missing_key' }
+  const doFetch = cfg.fetch ?? fetch
+  try {
+    const res = await doFetch('https://gen.pollinations.ai/v1/images/generations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.pollinationsKey}` },
+      body: JSON.stringify({ prompt, model: cfg.pollinationsModel || DEFAULT_POLLINATIONS_MODEL, size: '1024x1024', response_format: 'b64_json' }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const text = await res.text()
+    let json: { data?: { b64_json?: unknown }[]; error?: unknown } = {}
+    try {
+      json = JSON.parse(text)
+    } catch {
+      // Risposta non JSON: il testo finisce nel log qui sotto.
+    }
+    const b64 = json.data?.[0]?.b64_json
+    if (res.ok && typeof b64 === 'string' && b64) return { image: new Uint8Array(Buffer.from(b64, 'base64')) }
+    const reason = `pollinations_${res.status}`
+    console.error(`[portrait] ${reason}: ${text.slice(0, 300)}`)
+    return { reason }
+  } catch (e) {
+    const reason = failure('pollinations', e)
+    console.error(`[portrait] ${reason}: ${describe(e)}`)
+    return { reason }
+  }
+}
+
+/**
+ * Prima Cloudflare, poi la riserva se Cloudflare rifiuta e resta tempo.
+ * `deadline` è l'istante (Date.now) entro cui tutto deve finire.
+ */
+export async function generatePortrait(cfg: PortraitConfig, prompt: string, deadline = Date.now() + DEADLINE_MS): Promise<GenerateResult> {
+  const left = () => deadline - Date.now()
+  const reasons: string[] = []
+  if (cfg.accountId && cfg.token) {
+    const cfTimeout = Math.min(cfg.pollinationsKey ? CF_TIMEOUT_WITH_FALLBACK_MS : IMAGE_TIMEOUT_MS, Math.max(left(), 1))
+    const out = await generateCloudflare(cfg, prompt, cfTimeout)
+    if ('image' in out) return out
+    reasons.push(out.reason)
+  }
+  if (cfg.pollinationsKey && left() >= MIN_FALLBACK_MS) {
+    const out = await generatePollinations(cfg, prompt, left())
+    if ('image' in out) return out
+    reasons.push(out.reason)
+  }
+  return { reason: reasons.join('+') || 'missing_key' }
+}
+
+/** JPEG da Cloudflare, ma la riserva può rispondere PNG o WebP: il tipo si legge dai primi byte. */
+export function imageType(b: Uint8Array): string {
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png'
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45) return 'image/webp'
+  return 'image/jpeg'
+}
+
+const imageHeaders = (b: Uint8Array) => ({ 'content-type': imageType(b), 'cache-control': 'public, max-age=31536000, immutable' })
 const NO_CACHE = { 'cache-control': 'no-store' }
 
 /**
@@ -207,16 +279,17 @@ export async function handlePortraitRequest(characterId: unknown, weaponId: unkn
   if (!ids) return { status: 404, body: { error: 'unknown_card' }, headers: NO_CACHE }
   const key = portraitKey(ids.character, ids.weapon)
   const cached = await store.get(key).catch(() => null)
-  if (cached) return { status: 200, body: cached, headers: IMAGE_HEADERS }
-  if (!cfg.accountId || !cfg.token) return { status: 503, body: { error: 'missing_key' }, headers: NO_CACHE }
+  if (cached) return { status: 200, body: cached, headers: imageHeaders(cached) }
+  const deadline = Date.now() + DEADLINE_MS
+  if (!(cfg.accountId && cfg.token) && !cfg.pollinationsKey) return { status: 503, body: { error: 'missing_key' }, headers: NO_CACHE }
   const subject = (await translateSubject(cfg, ids.character, ids.weapon)) ?? rawSubject(ids.character, ids.weapon)
-  const out = await generatePortrait(cfg, portraitPrompt(subject, key))
+  const out = await generatePortrait(cfg, portraitPrompt(subject, key), deadline)
   if (!('image' in out)) return { status: 502, body: { error: 'generation_failed', reason: out.reason }, headers: NO_CACHE }
   const { image } = out
   await store.set(key, image).catch(() => {
     // Senza cache si rigenera la prossima volta: costa una chiamata, non la partita.
   })
-  return { status: 200, body: image, headers: IMAGE_HEADERS }
+  return { status: 200, body: image, headers: imageHeaders(image) }
 }
 
 /** Cache in memoria, per i test e come riserva. */

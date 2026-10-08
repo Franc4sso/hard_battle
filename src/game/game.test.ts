@@ -655,6 +655,36 @@ describe('ritratti', () => {
     expect(err).toHaveBeenCalled()
     err.mockRestore()
   })
+
+  it('a quota Cloudflare finita prova Pollinations e salva il ritratto', async () => {
+    const urls: string[] = []
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).toString('base64')
+    const fetch = (async (url: string) => {
+      urls.push(url)
+      if (url.includes('cloudflare')) return new Response(JSON.stringify({ errors: [{ code: 4006, message: 'quota' }] }), { status: 429 })
+      return new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngBytes }] }), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const store = memoryStore()
+    const r = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, pollinationsKey: 'sk', fetch }, store)
+    err.mockRestore()
+    expect(r.status).toBe(200)
+    expect(r.headers['content-type']).toBe('image/png')
+    expect(urls.some((u) => u.includes('pollinations'))).toBe(true)
+    // Dalla cache, senza richiamare nessuno.
+    const again = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, pollinationsKey: 'sk', fetch }, store)
+    expect(again.status).toBe(200)
+    expect(urls).toHaveLength(2)
+  })
+
+  it('se falliscono tutti e due il 502 dice entrambi i motivi', async () => {
+    const fetch = (async (url: string) => new Response('{}', { status: url.includes('cloudflare') ? 429 : 402 })) as unknown as typeof globalThis.fetch
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, pollinationsKey: 'sk', fetch }, memoryStore())
+    err.mockRestore()
+    expect(r.status).toBe(502)
+    expect(r.body).toEqual({ error: 'generation_failed', reason: 'cloudflare_429+pollinations_402' })
+  })
 })
 
 describe('bestiario', () => {

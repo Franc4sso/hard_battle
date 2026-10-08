@@ -32,6 +32,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
       accountId: process.env.CF_ACCOUNT_ID,
       token: process.env.CF_API_TOKEN,
       model: process.env.CF_IMAGE_MODEL,
+      pollinationsKey: process.env.POLLINATIONS_API_KEY,
+      pollinationsModel: process.env.POLLINATIONS_IMAGE_MODEL,
       groqKey: process.env.GROQ_API_KEY,
       groqModel: process.env.PORTRAIT_TRANSLATE_MODEL,
     },

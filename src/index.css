@@ -265,7 +265,6 @@ body {
   .xp > div {
     height: 100%;
     background: var(--color-mint);
-    transition: width 0.4s ease;
   }
   /* Nome e giocatore sopra il ritratto grande, in basso, su una sfumatura scura. */
   .portrait-caption {

@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import type { DeckMode } from '../../../shared/cards'
 import { loadBestiary, removeEntry } from '../../game/bestiary'
-import { Button, Footer, anim } from '../components'
+import { Button, Footer, Portrait, anim } from '../components'
 
 const STEPS: [string, string][] = [
   ['Sabota e crea', 'Scegli una carta-trappola per l’avversario, poi costruisci il tuo mostro tra carte a caso.'],
@@ -81,7 +82,10 @@ export function BestiaryScreen({ onBack }: { onBack(): void }) {
             {shown.map((e, i) => (
               <li key={e.key} className="panel a-rise flex flex-col gap-1" style={anim(Math.min(i, 8) * 0.05, i % 2 ? 0.6 : -0.6)}>
                 <div className="flex items-start justify-between gap-2">
-                  <b className="comic text-[26px] leading-none">{e.nickname}</b>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Portrait monster={e.monster} size="sm" />
+                    <b className="comic text-[26px] leading-none">{e.nickname}</b>
+                  </div>
                   <span className="pill shrink-0 text-xs" style={{ background: e.wins > e.losses ? '#FFE14D' : '#fff' }}>
                     {e.wins} V · {e.losses} S
                   </span>
@@ -133,19 +137,27 @@ const BEST_OF: [number, string][] = [
   [5, 'MEGLIO DI 5'],
 ]
 
+const MODES: [DeckMode, string, string][] = [
+  ['classico', 'CLASSICO', 'Tutte le carte, mazzo sporco compreso.'],
+  ['sporca', 'SOLO SPORCA', 'Solo il mazzo sporco: volgare, scorretto, da bar tra adulti.'],
+]
+
 export function SetupScreen({
   initialNames,
   initialBestOf,
+  initialMode,
   onStart,
   onBack,
 }: {
   initialNames: [string, string]
   initialBestOf: number
-  onStart(names: [string, string], bestOf: number): void
+  initialMode: DeckMode
+  onStart(names: [string, string], bestOf: number, mode: DeckMode): void
   onBack(): void
 }) {
   const [names, setNames] = useState<[string, string]>(initialNames)
   const [bestOf, setBestOf] = useState(initialBestOf)
+  const [mode, setMode] = useState<DeckMode>(initialMode)
   const clean = names.map((n) => n.trim()) as [string, string]
   const ok = clean[0] && clean[1] && clean[0].toLowerCase() !== clean[1].toLowerCase()
 
@@ -154,7 +166,7 @@ export function SetupScreen({
       className="screen"
       onSubmit={(e) => {
         e.preventDefault()
-        if (ok) onStart(clean, bestOf)
+        if (ok) onStart(clean, bestOf, mode)
       }}
     >
       <h1 className="title-comic a-slam mt-4 text-[56px]" style={anim(0, -2)}>
@@ -193,6 +205,17 @@ export function SetupScreen({
             </button>
           ))}
         </div>
+      </div>
+      <div className="flex flex-col gap-2">
+        <span className="label text-white">Mazzo</span>
+        <div className="flex gap-2">
+          {MODES.map(([m, label]) => (
+            <button key={m} type="button" className="seg" aria-pressed={mode === m} onClick={() => setMode(m)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-[13px] font-bold text-white">{MODES.find(([m]) => m === mode)?.[2]}</span>
       </div>
       <Footer>
         <Button type="submit" disabled={!ok}>

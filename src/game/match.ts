@@ -1,4 +1,4 @@
-import { ARENAS, DECKS, SABOTAGE_DECKS, SLOTS, type Card, type Slot } from '../../shared/cards'
+import { ARENAS, SABOTAGE_DECKS, SLOTS, decksFor, type Card, type DeckMode, type Slot } from '../../shared/cards'
 import {
   START,
   cleanCustom,
@@ -71,6 +71,8 @@ export interface MatchState {
   version: 5
   seed: number
   bestOf: number
+  /** Da quali mazzi si pesca (le partite salvate prima della modalità non ce l'hanno: vale "classico"). */
+  mode?: DeckMode
   players: [MatchPlayer, MatchPlayer]
   round: number
   /** Chi apre il round (si alterna). */
@@ -153,7 +155,7 @@ function draw(rng: Rng, deck: Card[], drawn: string[], n: number): { cards: Card
 /** Carte da scegliere: dal mazzo normale, o dal mazzo trappola quando si sabota. */
 function withOffer(state: MatchState, slot: Slot, sabotage = false): MatchState {
   const rng = new Rng(state.seed)
-  const source = sabotage && slot !== 'character' ? SABOTAGE_DECKS[slot] : DECKS[slot]
+  const source = sabotage && slot !== 'character' ? SABOTAGE_DECKS[slot] : decksFor(state.mode ?? 'classico')[slot]
   const { cards, drawn } = draw(rng, source, state.drawn, OFFER_SIZE)
   return { ...state, offer: cards, drawn, seed: rng.seed }
 }
@@ -195,11 +197,12 @@ function startRound(state: MatchState, round: number, first: Side): MatchState {
   return enterTurn(base, 0, 'pass')
 }
 
-export function createMatch(names: [string, string], bestOf: number, seed: number): MatchState {
+export function createMatch(names: [string, string], bestOf: number, seed: number, mode: DeckMode = 'classico'): MatchState {
   const blank: MatchState = {
     version: 5,
     seed,
     bestOf,
+    mode,
     players: [
       { name: names[0], wins: 0 },
       { name: names[1], wins: 0 },

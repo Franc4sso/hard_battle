@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { DeckMode } from '../shared/cards'
 import { setMuted } from './audio/sfx'
 import { recordBattle } from './game/bestiary'
 import { createMatch, reduce, type Action, type MatchState } from './game/match'
@@ -53,16 +54,16 @@ export default function App() {
     setMatch((cur) => (cur ? reduce(cur, a) : cur))
   }
 
-  const start = (names: [string, string], bestOf: number) => {
-    setPrefs((p) => ({ ...p, names, bestOf }))
-    setMatch(createMatch(names, bestOf, randomSeed()))
+  const start = (names: [string, string], bestOf: number, mode: DeckMode) => {
+    setPrefs((p) => ({ ...p, names, bestOf, mode }))
+    setMatch(createMatch(names, bestOf, randomSeed(), mode))
     setView('game')
   }
 
   if (view === 'setup')
     return (
       <main className="app">
-        <SetupScreen initialNames={prefs.names} initialBestOf={prefs.bestOf} onStart={start} onBack={() => setView('home')} />
+        <SetupScreen initialNames={prefs.names} initialBestOf={prefs.bestOf} initialMode={prefs.mode} onStart={start} onBack={() => setView('home')} />
       </main>
     )
   if (view === 'bestiary')
@@ -95,7 +96,7 @@ export default function App() {
     final: (
       <FinalScreen
         {...props}
-        onRematch={() => start([match.players[0].name, match.players[1].name], match.bestOf)}
+        onRematch={() => start([match.players[0].name, match.players[1].name], match.bestOf, match.mode ?? 'classico')}
         onNewPlayers={() => setView('setup')}
         onExit={() => setView('home')}
       />

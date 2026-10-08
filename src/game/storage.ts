@@ -1,3 +1,4 @@
+import { isDeckMode, type DeckMode } from '../../shared/cards'
 import type { MatchState } from './match'
 
 // v5: rissa a frasi suggerite, le partite salvate prima non sono compatibili.
@@ -8,9 +9,10 @@ export interface Prefs {
   muted: boolean
   names: [string, string]
   bestOf: number
+  mode: DeckMode
 }
 
-const DEFAULT_PREFS: Prefs = { muted: false, names: ['', ''], bestOf: 3 }
+const DEFAULT_PREFS: Prefs = { muted: false, names: ['', ''], bestOf: 3, mode: 'classico' }
 
 function read<T>(key: string): T | undefined {
   try {
@@ -36,5 +38,8 @@ export const loadMatch = (): MatchState | undefined => {
 }
 export const saveMatch = (m: MatchState | undefined) => write(MATCH_KEY, m)
 
-export const loadPrefs = (): Prefs => ({ ...DEFAULT_PREFS, ...read<Prefs>(PREFS_KEY) })
+export const loadPrefs = (): Prefs => {
+  const p = { ...DEFAULT_PREFS, ...read<Prefs>(PREFS_KEY) }
+  return isDeckMode(p.mode) ? p : { ...p, mode: 'classico' }
+}
 export const savePrefs = (p: Prefs) => write(PREFS_KEY, p)

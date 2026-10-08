@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -43,12 +45,63 @@ function devBattleApi(mode: string): Plugin {
   }
 }
 
+/**
+ * In sviluppo anche /api/portrait/:personaggio/:arma gira nel dev server. Le
+ * immagini già generate restano in .netlify/portraits (ignorata da git).
+ */
+function devPortraitApi(mode: string): Plugin {
+  return {
+    name: 'dev-portrait-api',
+    apply: 'serve',
+    configureServer(server) {
+      const dir = path.join(server.config.root, '.netlify', 'portraits')
+      const store = {
+        async get(key: string) {
+          try {
+            return new Uint8Array(await fs.readFile(path.join(dir, key)))
+          } catch {
+            return null
+          }
+        },
+        async set(key: string, data: Uint8Array) {
+          await fs.mkdir(dir, { recursive: true })
+          await fs.writeFile(path.join(dir, key), data)
+        },
+      }
+      server.middlewares.use('/api/portrait', async (req, res) => {
+        const [character, weapon] = (req.url ?? '').split('?')[0].split('/').filter(Boolean)
+        let out: { status: number; body: Uint8Array | object; headers: Record<string, string> } = { status: 500, body: { error: 'dev_server' }, headers: {} }
+        try {
+          const env = loadEnv(mode, server.config.root, '')
+          const { handlePortraitRequest } = await server.ssrLoadModule('/server/portrait.ts')
+          out = await handlePortraitRequest(
+            character,
+            weapon,
+            { accountId: env.CF_ACCOUNT_ID, token: env.CF_API_TOKEN, model: env.CF_IMAGE_MODEL, groqKey: env.GROQ_API_KEY, groqModel: env.PORTRAIT_TRANSLATE_MODEL },
+            store,
+          )
+        } catch (e) {
+          console.error('[dev-portrait-api]', e)
+        }
+        res.statusCode = out.status
+        for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v)
+        if (out.body instanceof Uint8Array) res.end(Buffer.from(out.body))
+        else {
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify(out.body))
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   return {
     plugins: [
       react(),
       tailwindcss(),
       devBattleApi(mode),
+      devPortraitApi(mode),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: ['favicon.svg', 'apple-touch-icon.png'],

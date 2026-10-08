@@ -1,5 +1,6 @@
-import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
+import { useEffect, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react'
 import { play } from '../audio/sfx'
+import { markPortrait, portraitState, portraitUrl } from '../game/portraits'
 import type { Card, Slot } from '../../shared/cards'
 import type { Monster, Side } from '../../shared/battle'
 
@@ -53,6 +54,41 @@ export function HpBar({ hp }: { hp: number }) {
   )
 }
 
+/**
+ * Il ritratto del mostro, generato dal server. Finché non arriva si vede un
+ * riquadro a righe; se non arriva, il riquadro resta: la scheda non salta.
+ * Un ritratto fallito si ritenta una volta a ogni nuova schermata (il server
+ * non mette in cache i fallimenti, quindi è un vero secondo tentativo).
+ */
+export function Portrait({ monster, size = 'md', className = '' }: { monster: Pick<Monster, 'character' | 'weapon'>; size?: 'sm' | 'md'; className?: string }) {
+  const url = portraitUrl(monster)
+  const initial = () => (portraitState(monster) === 'ready' ? 'ready' : 'loading')
+  const [state, setState] = useState<'loading' | 'ready' | 'failed'>(initial)
+  useEffect(() => {
+    setState(initial())
+  }, [url]) // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className={`portrait portrait-${size} ${state} ${className}`} aria-hidden={state !== 'ready'}>
+      {state !== 'failed' && (
+        <img
+          src={url}
+          alt=""
+          decoding="async"
+          onLoad={() => {
+            markPortrait(monster, 'ready')
+            setState('ready')
+          }}
+          onError={() => {
+            markPortrait(monster, 'failed')
+            setState('failed')
+          }}
+        />
+      )}
+      {state !== 'ready' && <span className="comic text-[13px] leading-tight">{state === 'failed' ? 'SENZA\nRITRATTO' : 'RITRATTO\nIN ARRIVO'}</span>}
+    </div>
+  )
+}
+
 export function MonsterCard({ monster, player, side, className = '', style }: { monster: Monster; player: string; side: Side; className?: string; style?: CSSProperties }) {
   const rows: [string, Card][] = [
     ['Arma', monster.weapon],
@@ -60,23 +96,26 @@ export function MonsterCard({ monster, player, side, className = '', style }: { 
     ['Potere', monster.power],
   ]
   return (
-    <div className={`panel flex flex-col gap-2 ${className}`} style={style}>
-      <span className="label" style={{ color: PLAYER_TEXT[side] }}>
-        {player}
-      </span>
-      <b className="comic text-[28px] leading-none">{monster.character.name}</b>
-      <ul className="flex flex-col gap-1 text-[13px] leading-snug">
-        {rows.map(([k, card]) => (
-          <li key={k}>
-            <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span>
-            {card.cursed && (
-              <span className="ml-1.5 rounded-md border-2 border-ink px-1 text-[10px] font-extrabold tracking-wide" style={{ background: '#FF7AC2' }}>
-                TRAPPOLA
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
+    <div className={`panel flex gap-3 ${className}`} style={style}>
+      <Portrait monster={monster} />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <span className="label" style={{ color: PLAYER_TEXT[side] }}>
+          {player}
+        </span>
+        <b className="comic text-[26px] leading-none">{monster.character.name}</b>
+        <ul className="flex flex-col gap-1 text-[13px] leading-snug">
+          {rows.map(([k, card]) => (
+            <li key={k}>
+              <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span>
+              {card.cursed && (
+                <span className="ml-1.5 rounded-md border-2 border-ink px-1 text-[10px] font-extrabold tracking-wide" style={{ background: '#FF7AC2' }}>
+                  TRAPPOLA
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   )
 }

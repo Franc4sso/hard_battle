@@ -111,9 +111,12 @@ function parseChoices(v: unknown, t: FightToken): [PlayedMove, PlayedMove] | und
  * - { stage: "opening", arena, fighters } → { opening, token }
  * - { stage: "round", token, choices: [{pick: n} | {custom: "..."}, …] } → { round, next, offers, token }
  */
+/** Basta una carta sporca sul ring e il narratore può andarci pesante. */
+export const hasDirtyCard = (fighters: [Fighter, Fighter]) => fighters.some((f) => SLOT_KEYS.some((s) => f.monster[s].dirty))
+
 export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Promise<HandlerResult> {
   if (!cfg.apiKey) return { status: 503, body: { error: 'missing_key' } }
-  const ai: AiConfig = { ...cfg, apiKey: cfg.apiKey }
+  const base: AiConfig = { ...cfg, apiKey: cfg.apiKey }
   const secret = cfg.secret || cfg.apiKey
   const rand = cfg.rand ?? Math.random
   let body: Record<string, unknown>
@@ -132,6 +135,7 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const event = eventAt(t.opening.events, t.fs.round + 1)
       // L'ordine in cui l'AI vede i due combattenti si rimescola a ogni round: i modelli tendono a favorire uno dei due.
       const seen = [...(t.seen ?? []), ...t.offers.flat().map((o) => o.text)].slice(-SEEN_SIZE)
+      const ai = { ...base, dirty: hasDirtyCard(parsed.fighters) }
       const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, moves, event, ai, seen)
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
       const actions: [string, string] = [moves[0].text, moves[1].text]
@@ -147,6 +151,7 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
 
     const parsed = parseRequest(body)
     if (!parsed) return { status: 400, body: { error: 'bad_request' } }
+    const ai = { ...base, dirty: hasDirtyCard(parsed.fighters) }
     const opening = await generateOpening(parsed.fighters, parsed.arena, rand() < 0.5, scheduleEvents(rand), ai)
     const state: FightToken = {
       v: 3,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ARENAS, DECKS, HEALING_POWER_IDS, SABOTAGE_DECKS, SLOTS, findCard } from '../../shared/cards'
+import { ARENAS, DECKS, DIRTY_DECKS, HEALING_POWER_IDS, SABOTAGE_DECKS, SLOTS, decksFor, findCard } from '../../shared/cards'
 import {
   CUSTOM_MAX,
   LAST_BREATH,
@@ -26,7 +26,8 @@ import {
   type Suggestion,
 } from '../../shared/battle'
 import { generateOpening, generateRound, roundPrompt } from '../../server/groq'
-import { handleBattleRequest, parseRequest } from '../../server/handler'
+import { handleBattleRequest, hasDirtyCard, parseRequest } from '../../server/handler'
+import { handlePortraitRequest, memoryStore, portraitPrompt, rawSubject } from '../../server/portrait'
 import { sign, verify } from '../../server/token'
 import { withBattle } from './bestiary'
 import { battleRequest, createMatch, currentSlot, draftSlots, nextChooser, reduce, type MatchState } from './match'
@@ -109,6 +110,28 @@ describe('carte', () => {
     expect(traps.every((c) => c.cursed)).toBe(true)
     expect(SLOTS.flatMap((s) => DECKS[s]).some((c) => c.cursed)).toBe(false)
     for (const id of HEALING_POWER_IDS) expect(findCard(id)).toBeDefined()
+  })
+
+  it('il mazzo sporco sta nel classico e da solo in "solo sporca"', () => {
+    for (const s of SLOTS) {
+      expect(DIRTY_DECKS[s].length).toBeGreaterThanOrEqual(10)
+      expect(DIRTY_DECKS[s].every((c) => c.dirty)).toBe(true)
+      expect(decksFor('classico')[s]).toEqual(expect.arrayContaining(DIRTY_DECKS[s]))
+      expect(decksFor('sporca')[s]).toBe(DIRTY_DECKS[s])
+    }
+    // In "solo sporca" si pescano solo carte sporche, per tutto il draft.
+    let s = createMatch(['A', 'B'], 1, 7, 'sporca')
+    for (let i = 0; i < 40 && s.phase !== 'versus'; i++) {
+      if (s.phase === 'pass') s = reduce(s, { type: 'beginTurn' })
+      else if (s.phase === 'sabotage') s = reduce(s, { type: 'sabotage', index: 0 })
+      else if (s.phase === 'pick') {
+        expect(s.offer.every((c) => c.dirty)).toBe(true)
+        s = reduce(s, { type: 'pick', index: 0 })
+      } else if (s.phase === 'ready') s = reduce(s, { type: 'confirm' })
+    }
+    expect(s.phase).toBe('versus')
+    // Una partita salvata senza modalità pesca dal classico.
+    expect(reduce({ ...createMatch(['A', 'B'], 1, 7), mode: undefined }, { type: 'beginTurn' }).offer.length).toBe(3)
   })
 })
 
@@ -513,6 +536,113 @@ describe('server', () => {
     expect(lastSent.messages[1].content).toContain('colpo nuova')
     // …e sa quali mosse ha già proposto, per non ripeterle.
     expect(lastSent.messages[1].content).toMatch(/MOSSE GIÀ SUGGERITE.*«finta 0».*«finta nuova0»/)
+  })
+})
+
+describe('narratore sporco', () => {
+  it('il prompt di sistema diventa sboccato solo con una carta sporca sul ring', async () => {
+    let system = ''
+    const fetch = (async (_url: string, init: RequestInit) => {
+      system = JSON.parse(String(init.body)).messages[0].content
+      const answer = { title: 'T', nicknames: ['a', 'b'], events: ['x', 'y'], offers: [[], []] }
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }))
+    }) as unknown as typeof globalThis.fetch
+    const req = (m1: Monster) => ({
+      stage: 'opening',
+      arena: ARENAS[0].id,
+      fighters: [
+        { player: 'A', character: m1.character.id, weapon: m1.weapon.id, personality: m1.personality.id, power: m1.power.id },
+        { player: 'B', character: DECKS.character[1].id, weapon: DECKS.weapon[1].id, personality: DECKS.personality[1].id, power: DECKS.power[1].id },
+      ],
+    })
+    expect(hasDirtyCard(fighters())).toBe(false)
+    await handleBattleRequest(JSON.stringify(req(monster(0))), { apiKey: 'k', fetch })
+    expect(system).toContain('slapstick per tutti')
+    expect(system).not.toContain('SPORCA')
+    const dirtyMonster: Monster = { ...monster(0), weapon: DIRTY_DECKS.weapon[0] }
+    expect(hasDirtyCard([{ player: 'A', monster: dirtyMonster }, fighters()[1]])).toBe(true)
+    await handleBattleRequest(JSON.stringify(req(dirtyMonster)), { apiKey: 'k', fetch })
+    expect(system).toContain('SPORCA')
+    expect(system).not.toContain('niente parolacce')
+  })
+})
+
+describe('ritratti', () => {
+  const cfg = { accountId: 'acc', token: 'tok' }
+  const png = Buffer.from('fake-image').toString('base64')
+  function fakeFetch() {
+    const calls: string[] = []
+    const fetch = (async (_url: string, init: RequestInit) => {
+      calls.push(JSON.parse(init.body as string).prompt)
+      return new Response(JSON.stringify({ result: { image: png } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof globalThis.fetch
+    return { fetch, calls }
+  }
+
+  it('il prompt descrive personaggio e arma nello stile fisso', () => {
+    const p = portraitPrompt(rawSubject(DECKS.character[0], DECKS.weapon[0]))
+    expect(p).toContain(DECKS.character[0].name)
+    expect(p).toContain(DECKS.weapon[0].desc)
+    expect(p).toContain('No text')
+  })
+
+  it('con la chiave Groq traduce le carte prima di disegnare', async () => {
+    const prompts: string[] = []
+    const fetch = (async (url: string, init: RequestInit) => {
+      if (url.includes('groq')) {
+        const content = JSON.stringify({ character: 'a furious koala with red eyes', weapon: "a grandma's slipper" })
+        return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 })
+      }
+      prompts.push(JSON.parse(init.body as string).prompt)
+      return new Response(JSON.stringify({ result: { image: png } }), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+    const r = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, groqKey: 'g', fetch }, memoryStore())
+    expect(r.status).toBe(200)
+    expect(prompts[0]).toContain("a grandma's slipper")
+    expect(prompts[0]).not.toContain(DECKS.weapon[0].desc)
+  })
+
+  it('se la traduzione fallisce disegna lo stesso con il testo italiano', async () => {
+    const prompts: string[] = []
+    const fetch = (async (url: string, init: RequestInit) => {
+      if (url.includes('groq')) return new Response('{}', { status: 500 })
+      prompts.push(JSON.parse(init.body as string).prompt)
+      return new Response(JSON.stringify({ result: { image: png } }), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+    const r = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, groqKey: 'g', fetch }, memoryStore())
+    expect(r.status).toBe(200)
+    expect(prompts[0]).toContain(DECKS.weapon[0].name)
+  })
+
+  it('accetta solo id esistenti e del mazzo giusto', async () => {
+    const store = memoryStore()
+    expect((await handlePortraitRequest('c-nope', DECKS.weapon[0].id, cfg, store)).status).toBe(404)
+    // Un'arma al posto del personaggio: no.
+    expect((await handlePortraitRequest(DECKS.weapon[0].id, DECKS.weapon[0].id, cfg, store)).status).toBe(404)
+    // Senza chiave: 503, non si tenta nemmeno.
+    expect((await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, {}, store)).status).toBe(503)
+  })
+
+  it('genera una volta sola e poi serve dalla cache', async () => {
+    const store = memoryStore()
+    const { fetch, calls } = fakeFetch()
+    const a = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, fetch }, store)
+    expect(a.status).toBe(200)
+    expect(a.headers['content-type']).toBe('image/jpeg')
+    expect(Buffer.from(a.body as Uint8Array).toString()).toBe('fake-image')
+    const b = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, fetch }, store)
+    expect(b.status).toBe(200)
+    expect(calls).toHaveLength(1)
+    // Altra arma, altro ritratto.
+    await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[1].id, { ...cfg, fetch }, store)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('se Cloudflare non risponde la scheda resta senza ritratto', async () => {
+    const fetch = (async () => new Response('{}', { status: 429 })) as unknown as typeof globalThis.fetch
+    const r = await handlePortraitRequest(DECKS.character[0].id, DECKS.weapon[0].id, { ...cfg, fetch }, memoryStore())
+    expect(r.status).toBe(502)
+    expect(r.headers['cache-control']).toBe('no-store')
   })
 })
 

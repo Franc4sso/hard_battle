@@ -4,6 +4,7 @@ import type { Monster } from '../../../shared/battle'
 import { play, vibrate } from '../../audio/sfx'
 import { championsOf, loadBestiary } from '../../game/bestiary'
 import { currentSlot, currentTurn, draftSlots, other, type Action, type MatchState } from '../../game/match'
+import { preloadPortrait } from '../../game/portraits'
 import { Button, Footer, Icon, LETTER_COLORS, SLOT_INFO, Sheet, anim } from '../components'
 
 export interface ScreenProps {
@@ -288,6 +289,8 @@ export function ReadyScreen({ state, dispatch }: ScreenProps) {
         <Button
           onClick={() => {
             play('pass')
+            // Il ritratto si genera adesso, mentre l'altro compone il suo: al VS è già pronto.
+            preloadPortrait(m)
             dispatch({ type: 'confirm' })
           }}
         >

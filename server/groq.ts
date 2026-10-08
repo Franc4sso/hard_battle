@@ -18,6 +18,8 @@ import {
 
 export interface AiConfig {
   apiKey: string
+  /** C'è una carta del mazzo sporco sul ring: il narratore può essere volgare. */
+  dirty?: boolean
   model?: string
   /** low | medium | high, solo per i modelli che ragionano. */
   reasoning?: string
@@ -44,8 +46,15 @@ STILE
 - Telecronaca da cartone animato: esagerata, surreale, visiva, con battute che fanno ridere davvero e hanno senso nel contesto.
 - Chiama i combattenti con il nome del personaggio, mai con il nome del giocatore.
 - Niente numeri di vita o di danni: il gioco non li mostra.
-- Comicità slapstick per tutti: niente sangue, niente sesso, niente parolacce, niente insulti a gruppi di persone.
+- {TONO}
 - Rispondi SOLO con un oggetto JSON valido, nella forma richiesta.`
+
+const CLEAN_TONE = 'Comicità slapstick per tutti: niente sangue, niente sesso, niente parolacce, niente insulti a gruppi di persone.'
+const DIRTY_TONE =
+  'Comicità SPORCA da bar tra adulti: parolacce, volgarità, doppi sensi, sesso, scoregge, vomito e fluidi corporei sono benvenuti e fanno ridere. I potenti e i dittatori sul ring si prendono in giro e perdono in modo ridicolo e umiliante. Resta fuori solo una cosa: insulti o battute contro gruppi di persone (etnia, religione, disabilità, orientamento). Niente sangue vero: è un cartone animato, anche se sboccato.'
+
+/** Il prompt di sistema: pulito di default, sboccato se sul ring c'è una carta del mazzo sporco. */
+export const systemPrompt = (dirty = false) => SYSTEM_PROMPT.replace('{TONO}', dirty ? DIRTY_TONE : CLEAN_TONE)
 
 const TRAP = ' [CARTA TRAPPOLA imposta dall’avversario: è uno svantaggio vero]'
 
@@ -179,7 +188,7 @@ async function askModel(user: string, cfg: AiConfig, model: string): Promise<Rec
       max_tokens: 3000,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt(cfg.dirty) },
         { role: 'user', content: user },
       ],
     }),

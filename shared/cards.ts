@@ -13,6 +13,7 @@ import {
   MORE_POWERS,
   MORE_WEAPONS,
 } from './decks'
+import { DIRTY_CHARACTERS, DIRTY_PERSONALITIES, DIRTY_POWERS, DIRTY_WEAPONS } from './dirty'
 
 export type Slot = 'character' | 'weapon' | 'personality' | 'power'
 
@@ -22,9 +23,16 @@ export interface Card {
   desc: string
   /** Carta trappola: esce solo nel sabotaggio ed è uno svantaggio per chi la riceve. */
   cursed?: true
+  /** Carta del mazzo sporco: volgare e scorretta, il narratore può andarci pesante. */
+  dirty?: true
 }
 
 export const SLOTS: readonly Slot[] = ['character', 'weapon', 'personality', 'power']
+
+/** Da quali mazzi si pesca: "classico" mischia tutto, "sporca" solo il mazzo sporco. */
+export type DeckMode = 'classico' | 'sporca'
+export const DECK_MODES: readonly DeckMode[] = ['classico', 'sporca']
+export const isDeckMode = (v: unknown): v is DeckMode => v === 'classico' || v === 'sporca'
 
 function slug(s: string): string {
   return s
@@ -35,8 +43,14 @@ function slug(s: string): string {
     .replace(/^-|-$/g, '')
 }
 
-function deck(prefix: string, rows: [string, string][], cursed = false): Card[] {
-  return rows.map(([name, desc]) => ({ id: `${prefix}-${slug(name)}`, name, desc, ...(cursed ? { cursed: true as const } : {}) }))
+function deck(prefix: string, rows: [string, string][], cursed = false, dirty = false): Card[] {
+  return rows.map(([name, desc]) => ({
+    id: `${prefix}-${slug(name)}`,
+    name,
+    desc,
+    ...(cursed ? { cursed: true as const } : {}),
+    ...(dirty ? { dirty: true as const } : {}),
+  }))
 }
 
 const BASE_CHARACTERS = deck('c', [
@@ -282,19 +296,29 @@ const BASE_ARENAS = deck('a', [
   ['Cucina di un ristorante stellato', 'Fuochi accesi, coltelli ovunque, uno chef che urla.'],
 ])
 
-export const CHARACTERS = [...BASE_CHARACTERS, ...deck('c', MORE_CHARACTERS)]
-export const WEAPONS = [...BASE_WEAPONS, ...deck('w', MORE_WEAPONS)]
-export const PERSONALITIES = [...BASE_PERSONALITIES, ...deck('p', MORE_PERSONALITIES)]
-export const POWERS = [...BASE_POWERS, ...deck('s', MORE_POWERS)]
+/** Solo il mazzo sporco: è la modalità "solo sporca". */
+export const DIRTY_DECKS: Record<Slot, Card[]> = {
+  character: deck('c', DIRTY_CHARACTERS, false, true),
+  weapon: deck('w', DIRTY_WEAPONS, false, true),
+  personality: deck('p', DIRTY_PERSONALITIES, false, true),
+  power: deck('s', DIRTY_POWERS, false, true),
+}
+
+export const CHARACTERS = [...BASE_CHARACTERS, ...deck('c', MORE_CHARACTERS), ...DIRTY_DECKS.character]
+export const WEAPONS = [...BASE_WEAPONS, ...deck('w', MORE_WEAPONS), ...DIRTY_DECKS.weapon]
+export const PERSONALITIES = [...BASE_PERSONALITIES, ...deck('p', MORE_PERSONALITIES), ...DIRTY_DECKS.personality]
+export const POWERS = [...BASE_POWERS, ...deck('s', MORE_POWERS), ...DIRTY_DECKS.power]
 export const ARENAS = [...BASE_ARENAS, ...deck('a', MORE_ARENAS)]
 
-/** I mazzi da cui si costruisce il proprio mostro. */
+/** I mazzi da cui si costruisce il proprio mostro (modalità "classico": tutto, mazzo sporco compreso). */
 export const DECKS: Record<Slot, Card[]> = {
   character: CHARACTERS,
   weapon: WEAPONS,
   personality: PERSONALITIES,
   power: POWERS,
 }
+
+export const decksFor = (mode: DeckMode): Record<Slot, Card[]> => (mode === 'sporca' ? DIRTY_DECKS : DECKS)
 
 /** Mazzi TRAPPOLA: escono solo quando si sabota l'avversario (il personaggio non si sabota). */
 export const SABOTAGE_DECKS: Record<Exclude<Slot, 'character'>, Card[]> = {

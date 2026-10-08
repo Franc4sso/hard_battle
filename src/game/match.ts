@@ -1,4 +1,5 @@
 import { ARENAS, SABOTAGE_DECKS, SLOTS, decksFor, type Card, type DeckMode, type Slot } from '../../shared/cards'
+import { RARITIES, RARITY_ODDS } from '../../shared/rarity'
 import {
   START,
   cleanPicks,
@@ -135,7 +136,11 @@ export function currentSlot(s: MatchState): Slot {
   return slots[Math.min(s.step, slots.length - 1)]
 }
 
-/** Pesca n carte distinte non ancora uscite; se il mazzo è finito lo rimescola. */
+/**
+ * Pesca n carte distinte non ancora uscite; se il mazzo è finito lo rimescola.
+ * Prima si tira il livello di rarità (60/28/10/2), poi una carta a caso di
+ * quel livello; se non ce ne sono più si scende al livello sotto.
+ */
 function draw(rng: Rng, deck: Card[], drawn: string[], n: number): { cards: Card[]; drawn: string[] } {
   let pool = deck.filter((c) => !drawn.includes(c.id))
   let used = drawn
@@ -145,7 +150,15 @@ function draw(rng: Rng, deck: Card[], drawn: string[], n: number): { cards: Card
     pool = [...deck]
   }
   const cards: Card[] = []
-  for (let i = 0; i < n; i++) cards.push(pool.splice(rng.int(pool.length), 1)[0])
+  for (let i = 0; i < n; i++) {
+    const wanted = rng.pickWeighted(RARITIES.map((r) => ({ r, weight: RARITY_ODDS[r] }))).r
+    let tier: Card[] = []
+    for (let k = RARITIES.indexOf(wanted); k >= 0 && !tier.length; k--) tier = pool.filter((c) => c.rarity === RARITIES[k])
+    if (!tier.length) tier = pool
+    const card = rng.pick(tier)
+    pool = pool.filter((c) => c !== card)
+    cards.push(card)
+  }
   return { cards, drawn: [...used, ...cards.map((c) => c.id)] }
 }
 

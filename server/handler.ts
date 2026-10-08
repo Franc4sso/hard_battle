@@ -1,6 +1,7 @@
 import { deckOf, findCard, type Card, type Slot } from '../shared/cards'
 import {
   START,
+  attackPower,
   cleanPicks,
   eventAt,
   playRound,
@@ -132,7 +133,9 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const moves: Moves = { names: [used[0].name, used[1].name], actions: [used[0].text, used[1].text] }
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
       const twist = t.lastTwist ? null : judgement.twist
-      const { round, next } = playRound(t.fs, moves, { ...judgement, twist }, names, rand, event)
+      // La rarità della carta da cui nasce l'attacco usato pesa sui danni, di nascosto.
+      const power: [number, number] = [attackPower(parsed.fighters[0].monster, picks[0][judgement.used[0]]), attackPower(parsed.fighters[1].monster, picks[1][judgement.used[1]])]
+      const { round, next } = playRound(t.fs, moves, { ...judgement, twist }, names, rand, event, power)
       const log = [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE)
       const token = sign({ ...t, picks, fs: next, log, lastTwist: !!twist, done: !!round.end } satisfies FightToken, secret)
       return { status: 200, body: { round, next, token } }

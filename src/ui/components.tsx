@@ -2,6 +2,7 @@ import { useEffect, useState, type ButtonHTMLAttributes, type CSSProperties, typ
 import { play } from '../audio/sfx'
 import { markPortrait, portraitState, portraitUrl } from '../game/portraits'
 import type { Slot } from '../../shared/cards'
+import { RARITY_LABEL, type Rarity } from '../../shared/rarity'
 import type { Monster, Side } from '../../shared/battle'
 
 export const PLAYER_COLORS: Record<Side, string> = { 0: '#FF4B3E', 1: '#2F7BFF' }
@@ -52,6 +53,12 @@ export function HpBar({ hp }: { hp: number }) {
       <div style={{ width: `${Math.max(0, hp)}%`, background: color }} />
     </div>
   )
+}
+
+/** L'etichetta della rarità; le comuni non ne hanno, così le altre si notano. */
+export function RarityTag({ rarity, className = '' }: { rarity: Rarity; className?: string }) {
+  if (rarity === 'comune') return null
+  return <span className={`rar rar-${rarity} ${className}`}>{rarity === 'leggendaria' ? '★ ' : ''}{RARITY_LABEL[rarity]}</span>
 }
 
 /**

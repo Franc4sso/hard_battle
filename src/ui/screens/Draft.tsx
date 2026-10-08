@@ -5,7 +5,7 @@ import { play, vibrate } from '../../audio/sfx'
 import { championsOf, loadBestiary } from '../../game/bestiary'
 import { currentSlot, currentTurn, draftSlots, other, type Action, type MatchState } from '../../game/match'
 import { preloadPortrait } from '../../game/portraits'
-import { Button, Footer, Icon, LETTER_COLORS, Portrait, SLOT_INFO, Sheet, anim } from '../components'
+import { Button, Footer, Icon, LETTER_COLORS, Portrait, RarityTag, SLOT_INFO, Sheet, anim } from '../components'
 
 export interface ScreenProps {
   state: MatchState
@@ -55,7 +55,7 @@ function CardChoices({ cards, selected, onSelect }: { cards: Card[]; selected: n
           <div key={card.id} className="a-rise" style={anim(0.08 + i * 0.07)}>
             <button
               type="button"
-              className="choice"
+              className={`choice rar-card-${card.rarity}`}
               aria-pressed={on}
               style={{ transform: `rotate(${TILT[i]}deg) scale(${on ? 1.03 : 1})` }}
               onClick={() => {
@@ -67,8 +67,11 @@ function CardChoices({ cards, selected, onSelect }: { cards: Card[]; selected: n
               <span className="letter" style={{ background: LETTER_COLORS[i] }}>
                 {'ABC'[i]}
               </span>
-              <span className="flex flex-col gap-0.5">
-                <b className="text-lg leading-tight font-extrabold">{card.name}</b>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <b className="text-lg leading-tight font-extrabold">{card.name}</b>
+                  <RarityTag rarity={card.rarity} />
+                </span>
                 <span className="text-[13px] leading-snug font-medium">{card.desc}</span>
               </span>
             </button>
@@ -282,7 +285,10 @@ export function ReadyScreen({ state, dispatch }: ScreenProps) {
                   {SLOT_INFO[s].label}
                   {isGift ? ` · regalo di ${state.players[other(state.picker)].name}` : ''}
                 </span>
-                <b className="text-[17px] leading-tight font-extrabold">{m[s].name}</b>
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <b className="text-[17px] leading-tight font-extrabold">{m[s].name}</b>
+                  <RarityTag rarity={m[s].rarity} />
+                </span>
                 <span className="text-[13px] leading-snug font-medium">{m[s].desc}</span>
               </span>
             </div>

@@ -3,7 +3,8 @@ import { ATTACKS_TO_PICK, GOOD_STAMPS, HIT_LABEL, MAX_HP, hpState, mvpOf, type M
 import { play, vibrate } from '../../audio/sfx'
 import { requestOpening, requestRound } from '../../game/api'
 import { matchWinner, nextChooser, other, type MatchState } from '../../game/match'
-import { Button, Footer, HpBar, PLAYER_COLORS, PLAYER_TEXT, Portrait, anim } from '../components'
+import type { Rarity } from '../../../shared/rarity'
+import { Button, Footer, HpBar, PLAYER_COLORS, PLAYER_TEXT, Portrait, RarityTag, anim } from '../components'
 import type { ScreenProps } from './Draft'
 
 /** Chiede presentazione e attacchi (una sola volta per round) e li mette nello stato. */
@@ -28,22 +29,23 @@ const characterOf = (state: MatchState, s: Side) => (state.monsters[s] as Monste
 /** La scheda del VS: ritratto grande, nome, le tre carte sotto. */
 function VersusCard({ state, side, className, delay }: { state: MatchState; side: Side; className: string; delay: number }) {
   const m = state.monsters[side] as Monster
-  const rows: [string, { name: string; cursed?: true }][] = [
+  const rows: [string, { name: string; cursed?: true; rarity: Rarity }][] = [
     ['Arma', m.weapon],
     ['Carattere', m.personality],
     ['Potere', m.power],
   ]
   return (
     <div className={`panel flex min-w-0 flex-col gap-2 p-2.5 ${className}`} style={{ ...anim(delay), rotate: side ? '1.2deg' : '-1.2deg', boxShadow: `5px 5px 0 ${PLAYER_COLORS[side]}` }}>
-      <Portrait monster={m} size="lg" />
+      <Portrait monster={m} size="lg" className={`rar-frame-${m.character.rarity}`} />
       <span className="label truncate" style={{ color: PLAYER_TEXT[side] }}>
         {state.players[side].name}
       </span>
       <b className="comic text-[22px] leading-[0.95]">{m.character.name}</b>
+      <RarityTag rarity={m.character.rarity} />
       <ul className="flex flex-col gap-0.5 text-[12px] leading-snug">
         {rows.map(([k, card]) => (
           <li key={k}>
-            <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span>
+            <span className="font-extrabold">{k}:</span> <span className="font-medium">{card.name}</span> <RarityTag rarity={card.rarity} />
             {card.cursed && (
               <span className="ml-1 rounded-md border-2 border-ink px-1 text-[9px] font-extrabold tracking-wide" style={{ background: '#FF7AC2' }}>
                 TRAPPOLA
@@ -318,8 +320,6 @@ function StampBadge({ stamp, side, delay }: { stamp: Stamp; side: Side; delay: n
 // ---------- la rissa va da sola ----------
 
 const MIN_REVEAL_MS = 1400
-/** Quanto resta in vista un round prima di passare al prossimo da solo. */
-const AUTO_NEXT_MS = 9000
 
 /** Chiede il round al server; intanto il pubblico aspetta. */
 function RoundLoader({ state, dispatch }: ScreenProps) {
@@ -414,29 +414,6 @@ function RoundView({ state, round, index }: { state: MatchState; round: RoundRes
   )
 }
 
-/** Conto alla rovescia verso il round dopo: si può saltare toccando il bottone. */
-function AutoNext({ ms, onDone, label }: { ms: number; onDone(): void; label: string }) {
-  const [left, setLeft] = useState(ms)
-  useEffect(() => {
-    const start = Date.now()
-    const t = setInterval(() => {
-      const l = Math.max(0, ms - (Date.now() - start))
-      setLeft(l)
-      if (l === 0) {
-        clearInterval(t)
-        onDone()
-      }
-    }, 250)
-    return () => clearInterval(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-  return (
-    <Button variant="red" onClick={onDone}>
-      {label} · {Math.ceil(left / 1000)}
-    </Button>
-  )
-}
-
 export function BattleScreen(props: ScreenProps) {
   const { state, dispatch } = props
   const { opening, rounds, end } = state.fight
@@ -491,7 +468,7 @@ export function BattleScreen(props: ScreenProps) {
               ))}
             </div>
             <p className="a-rise text-center text-[14px] leading-snug font-bold" style={anim(0.7)}>
-              Da qui in poi non si tocca niente: il giudice sceglie gli attacchi, racconta e decide. Si combatte finché qualcuno crolla.
+              Da qui in poi decide tutto il giudice: sceglie gli attacchi, racconta e giudica. Voi passate solo al round dopo. Si combatte finché qualcuno crolla.
             </p>
             {opening.source === 'offline' && (
               <p className="a-rise text-center text-[13px] font-bold" style={anim(0.8)}>
@@ -524,7 +501,9 @@ export function BattleScreen(props: ScreenProps) {
                 VERDETTO!
               </Button>
             ) : (
-              <AutoNext key={viewing} ms={AUTO_NEXT_MS} label="PROSSIMO ROUND" onDone={() => setViewing(null)} />
+              <Button variant="red" onClick={() => setViewing(null)}>
+                VAI ALL’ALTRO ROUND
+              </Button>
             )}
           </Footer>
         </>

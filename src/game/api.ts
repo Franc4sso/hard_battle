@@ -1,4 +1,5 @@
 import {
+  attackPower,
   normalizeOpening,
   offlineJudgement,
   offlineOpening,
@@ -85,11 +86,13 @@ export function requestRound(s: MatchState): Promise<RoundOut> {
     const fighters = fightersOf(s)
     const opening = f.opening as Opening
     // Senza AI si alternano i due attacchi, partendo da uno a caso.
-    const used = [0, 1].map((side) => opening.attacks[side][picks[side][(f.rounds.length + side + (s.seed % 2)) % 2]]) as [Attack, Attack]
+    const which = [0, 1].map((side) => picks[side][(f.rounds.length + side + (s.seed % 2)) % 2])
+    const used = [0, 1].map((side) => opening.attacks[side][which[side]]) as [Attack, Attack]
     const moves: Moves = { names: [used[0].name, used[1].name], actions: [used[0].text, used[1].text] }
     const judgement = offlineJudgement(fighters, used, Math.random)
     const names: [string, string] = [fighters[0].monster.character.name, fighters[1].monster.character.name]
-    const out = playRound(f.fs, moves, judgement, names, Math.random, currentEvent(s))
+    const power: [number, number] = [attackPower(fighters[0].monster, which[0]), attackPower(fighters[1].monster, which[1])]
+    const out = playRound(f.fs, moves, judgement, names, Math.random, currentEvent(s), power)
     return { ...out, token: null }
   })
 }

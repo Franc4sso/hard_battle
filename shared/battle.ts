@@ -1,4 +1,5 @@
 import type { Card } from './cards'
+import { RARITY_LEVEL } from './rarity'
 
 export type Side = 0 | 1
 
@@ -58,6 +59,12 @@ export interface Attack {
   text: string
   tone: Tone
 }
+
+/** La carta da cui nasce l'attacco k dei 5 (l'idea folle nasce dal personaggio). */
+export const attackSlot = (k: number): keyof Monster => (['character', 'weapon', 'personality', 'power'] as const)[k] ?? 'character'
+
+/** Livello di rarità nascosto dell'attacco k di un mostro: comune 0 … leggendaria 3. */
+export const attackPower = (m: Monster, k: number): 0 | 1 | 2 | 3 => RARITY_LEVEL[m[attackSlot(k)].rarity]
 
 /** Gli indici dei 2 attacchi scelti tra i 5. */
 export type Picks = [number, number]
@@ -222,12 +229,31 @@ export function consistent(j: Pick<Judgement, 'hits' | 'recover' | 'winner'>): P
   return { ...j, hits }
 }
 
-/** Applica un round: vita, KO o giuria. I numeri restano nascosti, il racconto è dell'AI. */
-export function playRound(fs: FightState, moves: Moves, j: Judgement, names: [string, string], rand: () => number, event?: ArenaEvent): { round: RoundResult; next: FightState } {
+/** Quanto spesso una carta rara, epica o leggendaria aggiunge un colpo in più, di nascosto. */
+const POWER_BONUS = [0, 0.25, 0.55, 1] as const
+
+/**
+ * Applica un round: vita, KO o giuria. I numeri restano nascosti, il racconto è dell'AI.
+ * `power`: la rarità nascosta dell'attacco usato da ciascuno (0-3).
+ */
+export function playRound(
+  fs: FightState,
+  moves: Moves,
+  j: Judgement,
+  names: [string, string],
+  rand: () => number,
+  event?: ArenaEvent,
+  power: [number, number] = [0, 0],
+): { round: RoundResult; next: FightState } {
   const roundNo = fs.round + 1
   const { hits, recover, winner } = consistent(j)
   // Colpo di reni: chi è all'ultimo respiro e ha la meglio colpisce ancora più forte. Così le rimonte succedono.
   if (winner !== null && fs.hp[winner] <= LAST_BREATH) hits[other(winner)] = Math.min(3, hits[other(winner)] + 1) as Hit
+  // La rarità lavora in silenzio: una carta forte ogni tanto picchia un po' più forte.
+  for (const s of [0, 1] as Side[]) {
+    const bonus = POWER_BONUS[Math.min(3, Math.max(0, Math.round(power[s])))] ?? 0
+    if (bonus > 0 && rand() < bonus) hits[other(s)] = Math.min(3, hits[other(s)] + 1) as Hit
+  }
   const jitter = () => 0.9 + rand() * 0.2
   const raw: [number, number] = [0, 0]
   const heal: [number, number] = [0, 0]

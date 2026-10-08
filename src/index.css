@@ -249,6 +249,64 @@ body {
     max-width: 100%;
     aspect-ratio: 1;
   }
+
+  /* Rarità: etichetta sulle carte, cornice sul ritratto, bagliore sulla carta da scegliere. */
+  .rar {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #fff;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 2px solid var(--color-ink);
+    white-space: nowrap;
+    vertical-align: middle;
+    line-height: 1.4;
+  }
+  .rar-rara {
+    background: var(--color-blue);
+  }
+  .rar-epica {
+    background: #9b4dff;
+  }
+  .rar-leggendaria {
+    background: #ffb020;
+    color: var(--color-ink);
+  }
+  .portrait.rar-frame-rara {
+    box-shadow: 0 0 0 3px var(--color-blue);
+  }
+  .portrait.rar-frame-epica {
+    box-shadow: 0 0 0 3px #9b4dff;
+  }
+  .portrait.rar-frame-leggendaria {
+    box-shadow:
+      0 0 0 3px #ffb020,
+      0 0 18px #ffb020;
+  }
+  .choice.rar-card-epica {
+    border-color: #9b4dff;
+  }
+  .choice.rar-card-leggendaria {
+    border-color: #ffb020;
+    box-shadow:
+      5px 5px 0 var(--color-ink),
+      0 0 22px #ffb020;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .choice.rar-card-leggendaria {
+      animation: legendary 1.6s ease-in-out infinite;
+    }
+  }
+  @keyframes legendary {
+    50% {
+      box-shadow:
+        5px 5px 0 var(--color-ink),
+        0 0 34px #ffb020;
+    }
+  }
   .portrait img {
     position: absolute;
     inset: 0;

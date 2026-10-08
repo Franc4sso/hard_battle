@@ -14,6 +14,7 @@ import {
   MORE_WEAPONS,
 } from './decks'
 import { DIRTY_CHARACTERS, DIRTY_PERSONALITIES, DIRTY_POWERS, DIRTY_WEAPONS } from './dirty'
+import { rarityOf, type Rarity } from './rarity'
 
 export type Slot = 'character' | 'weapon' | 'personality' | 'power'
 
@@ -21,6 +22,8 @@ export interface Card {
   id: string
   name: string
   desc: string
+  /** Si vede nel draft e pesa sui danni di nascosto. Trappole e arene sono sempre comuni. */
+  rarity: Rarity
   /** Carta trappola: esce solo nel sabotaggio ed è uno svantaggio per chi la riceve. */
   cursed?: true
   /** Carta del mazzo sporco: volgare e scorretta, il narratore può andarci pesante. */
@@ -48,6 +51,7 @@ function deck(prefix: string, rows: [string, string][], cursed = false, dirty = 
     id: `${prefix}-${slug(name)}`,
     name,
     desc,
+    rarity: cursed || prefix === 'a' ? 'comune' : rarityOf(name),
     ...(cursed ? { cursed: true as const } : {}),
     ...(dirty ? { dirty: true as const } : {}),
   }))

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { ARENAS, DECKS, DIRTY_DECKS, HEALING_POWER_IDS, SABOTAGE_DECKS, SLOTS, decksFor, findCard } from '../../shared/cards'
+import type { Rarity } from '../../shared/rarity'
 import {
   ATTACKS_PER_FIGHTER,
   ATTACK_TONES,
   LAST_BREATH,
   MAX_ROUNDS,
   START,
+  attackPower,
   cleanPicks,
   consistent,
   hpState,
@@ -117,6 +119,38 @@ describe('carte', () => {
     expect(traps.every((c) => c.cursed)).toBe(true)
     expect(SLOTS.flatMap((s) => DECKS[s]).some((c) => c.cursed)).toBe(false)
     for (const id of HEALING_POWER_IDS) expect(findCard(id)).toBeDefined()
+  })
+
+  it('ogni mazzo ha tutte le rarità, poche leggendarie, e la pesca le fa uscire nelle proporzioni giuste', () => {
+    for (const s of SLOTS) {
+      const count = (r: Rarity) => DECKS[s].filter((c) => c.rarity === r).length / DECKS[s].length
+      expect(count('leggendaria')).toBeGreaterThan(0)
+      expect(count('leggendaria')).toBeLessThan(0.05)
+      expect(count('epica')).toBeGreaterThan(0.05)
+      expect(count('epica')).toBeLessThan(0.2)
+      expect(count('rara')).toBeGreaterThan(0.2)
+      expect(count('rara')).toBeLessThan(0.4)
+    }
+    // Trappole e arene sono sempre comuni.
+    expect(Object.values(SABOTAGE_DECKS).flat().every((c) => c.rarity === 'comune')).toBe(true)
+    expect(ARENAS.every((c) => c.rarity === 'comune')).toBe(true)
+    // Pesca: su tante partite, le carte offerte seguono circa 60/28/10/2.
+    const seen: Record<Rarity, number> = { comune: 0, rara: 0, epica: 0, leggendaria: 0 }
+    let total = 0
+    for (let seed = 0; seed < 400; seed++) {
+      let s = reduce(reduce(reduce(createMatch(['A', 'B'], 1, seed), { type: 'beginTurn' }), { type: 'sabotage', index: 0 }), { type: 'beginTurn' })
+      s = reduce(s, { type: 'sabotage', index: 0 })
+      for (const c of s.offer) {
+        seen[c.rarity]++
+        total++
+      }
+    }
+    expect(seen.comune / total).toBeGreaterThan(0.5)
+    expect(seen.rara / total).toBeGreaterThan(0.18)
+    expect(seen.epica / total).toBeGreaterThan(0.05)
+    expect(seen.epica / total).toBeLessThan(0.16)
+    expect(seen.leggendaria / total).toBeGreaterThan(0.005)
+    expect(seen.leggendaria / total).toBeLessThan(0.05)
   })
 
   it('il mazzo sporco sta nel classico e da solo in "solo sporca"', () => {
@@ -307,6 +341,21 @@ describe('attacchi', () => {
     expect(a[3]).toEqual({ name: 'Tipo strano', text: 'x', tone: backup[3].tone })
     expect(a[4]).toBe(backup[4])
     expect(normalizeAttacks(undefined, backup)).toEqual(backup)
+  })
+
+  it('la rarità pesa sui danni di nascosto: una leggendaria colpisce sempre un po’ più forte', () => {
+    const calm = playRound(START, MOVES, judge({ hits: [1, 1], winner: null }), NAMES, half).round
+    const strong = playRound(START, MOVES, judge({ hits: [1, 1], winner: null }), NAMES, half, undefined, [3, 0]).round
+    expect(strong.hits[1]).toBe(2)
+    expect(strong.hits[0]).toBe(1)
+    expect(strong.damage[1]).toBeGreaterThan(calm.damage[1])
+    // Una comune non aggiunge mai niente, nemmeno con la fortuna dalla sua.
+    expect(playRound(START, MOVES, judge({ hits: [1, 1], winner: null }), NAMES, () => 0, undefined, [0, 0]).round.hits).toEqual([1, 1])
+    // L'attacco k nasce dalla carta k; l'idea folle dal personaggio.
+    const m: Monster = { ...monster(0), weapon: { ...monster(0).weapon, rarity: 'leggendaria' }, character: { ...monster(0).character, rarity: 'epica' } }
+    expect(attackPower(m, 1)).toBe(3)
+    expect(attackPower(m, 0)).toBe(2)
+    expect(attackPower(m, 4)).toBe(2)
   })
 
   it('si scelgono 2 indici distinti tra 0 e 4', () => {

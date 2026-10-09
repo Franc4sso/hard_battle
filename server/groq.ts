@@ -1,3 +1,4 @@
+import Anthropic from '@anthropic-ai/sdk'
 import type { Card } from '../shared/cards'
 import {
   LAST_BREATH,
@@ -14,6 +15,7 @@ import {
   type Fighter,
   type MoveSource,
   type Opening,
+  type Side,
 } from '../shared/battle'
 
 export interface AiConfig {
@@ -25,12 +27,18 @@ export interface AiConfig {
   reasoning?: string
   /** Modello di riserva se il principale ha finito i token al minuto ('' = nessuno). */
   fallbackModel?: string
+  /** Chiave Anthropic: se c'è, narra Claude e Groq resta di riserva. */
+  claudeKey?: string
+  claudeModel?: string
+  /** low | medium | high: più alto = più curato ma più lento. */
+  claudeEffort?: string
   fetch?: typeof fetch
 }
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 export const DEFAULT_MODEL = 'openai/gpt-oss-120b'
 export const FALLBACK_MODEL = 'openai/gpt-oss-20b'
+export const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-5-5'
 
 export const SYSTEM_PROMPT = `Sei il regista, il narratore e il GIUDICE di RISSA ASSURDA, un party game: due giocatori costruiscono un mostro assurdo ciascuno e lo guardano combattere. La rissa va da sola, round dopo round: a ogni round INVENTI TU la mossa di ciascun mostro, nata dalle sue carte e pensata contro l'avversario; le due mosse avvengono NELLO STESSO ISTANTE, tu racconti cosa succede e decidi chi ha la meglio. Scrivi in italiano.
 
@@ -51,6 +59,9 @@ STILE
 - Telecronaca da cartone animato: esagerata, surreale, visiva, con battute che fanno ridere davvero e hanno senso nel contesto.
 - Chiama i combattenti con il nome del personaggio, mai con il nome del giocatore.
 - Niente numeri di vita o di danni: il gioco non li mostra.
+- Niente tormentoni: un tic della personalità, un effetto del superpotere o un oggetto dell'arena compare al massimo in un round su due. Ogni carta ha tanti dettagli: pescane di diversi, il pubblico si stanca della stessa battuta.
+- Coerenza con i round precedenti: quello che è già successo resta successo (un colpo già sparato, un bracciolo già scoppiato).
+- Usa le parole esatte delle carte per gli oggetti (se la carta dice braccioli, sono braccioli).
 - {TONO}
 - Rispondi SOLO con un oggetto JSON valido, nella forma richiesta.`
 
@@ -104,8 +115,17 @@ export function roundPrompt(
   used: string[] = [],
   /** La carta usata da ciascuno nel round prima: stavolta un'altra. */
   lastSources?: [MoveSource, MoveSource],
+  /** I dettagli comici degli ultimi round: stavolta altri. */
+  gags: string[] = [],
+  /** Chi ha avuto la meglio negli ultimi round di fila, e quanti. */
+  streak?: { name: string; count: number },
 ): string {
   const names: [string, string] = [f[0].monster.character.name, f[1].monster.character.name]
+  const underdog = streak && names.find((n) => n !== streak.name)
+  const momentum =
+    streak && streak.count >= 2 && underdog
+      ? `\n${streak.name} ha avuto la meglio negli ultimi ${streak.count} round di fila: troppo facile, il pubblico vuole una rissa. Stavolta ${underdog} tira fuori una delle sue idee migliori e ${streak.name}, sicuro di sé, rischia di più. Giudica comunque onestamente le due mosse.`
+      : ''
   const SOURCE_NAME: Record<MoveSource, string> = { character: 'il personaggio', weapon: 'l’arma', personality: 'la personalità', power: 'il superpotere' }
   const vary = lastSources
     ? `Nel round prima ${names[0]} ha usato ${SOURCE_NAME[lastSources[0]]} e ${names[1]} ${SOURCE_NAME[lastSources[1]]}: stavolta OBBLIGATORIO partire da un'altra carta per ciascuno.`
@@ -118,10 +138,12 @@ export function roundPrompt(
 
 TITOLO: "${opening.title}". FINORA:
 ${story}
-${used.length ? `MOSSE GIÀ FATTE (vietato rifarle, anche con un altro nome): ${used.map((x) => `«${x}»`).join(' ')}\n` : ''}
+${used.length ? `MOSSE GIÀ FATTE (vietato rifarle, anche con un altro nome): ${used.map((x) => `«${x}»`).join(' ')}\n` : ''}${
+    gags.length ? `DETTAGLI GIÀ SFRUTTATI NEGLI ULTIMI ROUND (in questo round lasciali stare): ${gags.map((x) => `«${x}»`).join(' ')}\n` : ''
+  }
 ROUND ${roundNo}. Vita all'inizio del round (segreta, non citare numeri): ${life}. Sotto ${LAST_BREATH} si è all'ultimo respiro.${
     lastBreath.length ? ` ${lastBreath.join(' e ')} è all'ultimo respiro: se l'avversario ha la meglio è il colpo finale, se invece ha la meglio chi è a terra è una rimonta da raccontare in grande.` : ''
-  }${event ? `\nL'ARENA INTERVIENE IN QUESTO ROUND: ${event.text} Fallo pesare nella scena, per entrambi.` : ''}
+  }${momentum}${event ? `\nL'ARENA INTERVIENE IN QUESTO ROUND: ${event.text} Fallo pesare nella scena, per entrambi.` : ''}
 
 Il tuo compito, da regista, giudice e narratore. PRIMA inventa la mossa di ciascuno per questo round, come se fossi lo sceneggiatore di entrambi: per ${names[0]} una mossa nata da una sua carta e studiata contro ${names[1]} (le sue carte, la sua trappola, la sua indole, quello che ha appena fatto); per ${names[1]} lo stesso contro ${names[0]}. ${
     roundNo === 1 ? 'È il primo round: mosse che presentano bene ciascun mostro, con la sua carta più caratteristica.' : vary
@@ -137,7 +159,8 @@ Il tuo compito, da regista, giudice e narratore. PRIMA inventa la mossa di ciasc
 - "sfx": l'onomatopea più forte del round, in maiuscolo, max 14 caratteri.
 - "ko": due frasi finali spettacolari legate a questo round: la prima da usare SE crolla il combattente 0, la seconda SE crolla l'1.
 - "summary": 1 frase che ricordi il round nei prossimi, con i nomi delle due mosse.
-Forma: {"moves":[{"name":"...","text":"...","source":"weapon"},{"name":"...","text":"...","source":"power"}],"twist":null,"scene":"...","hits":[1,2],"recover":[0,0],"winner":0,"why":"...","stamps":["FURBA","MAH"],"sfx":"...","ko":["...","..."],"summary":"..."}`
+- "gags": i 2-3 dettagli comici che hai sfruttato in questo round (un tic, un oggetto, un effetto), max 5 parole ciascuno, per non ripeterli nei prossimi.
+Forma: {"moves":[{"name":"...","text":"...","source":"weapon"},{"name":"...","text":"...","source":"power"}],"twist":null,"scene":"...","hits":[1,2],"recover":[0,0],"winner":0,"why":"...","stamps":["FURBA","MAH"],"sfx":"...","ko":["...","..."],"summary":"...","gags":["...","..."]}`
 }
 
 class RateLimitError extends Error {
@@ -203,6 +226,36 @@ async function askGroq(user: string, cfg: AiConfig): Promise<Record<string, unkn
   }
 }
 
+const EFFORTS = ['low', 'medium', 'high'] as const
+
+async function askClaude(user: string, cfg: AiConfig): Promise<Record<string, unknown>> {
+  const client = new Anthropic({ apiKey: cfg.claudeKey, fetch: cfg.fetch, maxRetries: 0, timeout: 30_000 })
+  const effort = EFFORTS.find((e) => e === cfg.claudeEffort) ?? 'low'
+  const res = await client.messages.create({
+    model: cfg.claudeModel || DEFAULT_CLAUDE_MODEL,
+    max_tokens: 4000,
+    output_config: { effort },
+    system: systemPrompt(cfg.dirty),
+    messages: [{ role: 'user', content: user }],
+  })
+  if (res.stop_reason === 'refusal') throw new Error(`Claude ha rifiutato (${res.stop_details?.category ?? '?'})`)
+  const text = res.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
+  // Il JSON a volte arriva dentro un blocco ```json: si prende dalla prima all'ultima graffa.
+  return JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)) as Record<string, unknown>
+}
+
+/** Claude se c'è la chiave, con Groq di riserva; altrimenti solo Groq. */
+async function ask(user: string, cfg: AiConfig): Promise<Record<string, unknown>> {
+  if (!cfg.claudeKey) return askGroq(user, cfg)
+  try {
+    return await askClaude(user, cfg)
+  } catch (e) {
+    if (!cfg.apiKey) throw e
+    console.warn('[claude] si passa a Groq:', e instanceof Error ? e.message : e)
+    return askGroq(user, cfg)
+  }
+}
+
 /** Due tentativi: il secondo se la risposta non è valida o la rete fa i capricci. */
 async function retry<T>(fn: () => Promise<T | null>): Promise<T> {
   let lastError: unknown = new Error('Risposta AI non valida')
@@ -229,12 +282,14 @@ const flipPairs = (raw: Record<string, unknown>, keys: string[]) => {
 
 export function generateOpening(fighters: [Fighter, Fighter], arena: Card, swap: boolean, eventRounds: number[], cfg: AiConfig): Promise<Opening> {
   return retry(async () => {
-    const raw = await askGroq(openingPrompt(ordered(fighters, swap), arena, eventRounds), cfg)
+    const raw = await ask(openingPrompt(ordered(fighters, swap), arena, eventRounds), cfg)
     if (swap) flipPairs(raw, ['nicknames'])
     const texts = Array.isArray(raw.events) ? raw.events : []
     const events = eventRounds.map((round, i) => {
       const x = texts[i] as Record<string, unknown> | string | undefined
-      return { round, text: (typeof x === 'string' ? x : typeof x?.text === 'string' ? x.text : '').trim() }
+      const text = typeof x === 'string' ? x : typeof x?.text === 'string' ? x.text : ''
+      // A volte l'AI ci mette davanti "Round 2:": il gioco il round lo dice già.
+      return { round, text: text.replace(/^\s*round\s*\d+\s*[:.\-–]\s*/i, '').trim() }
     })
     const fallback = offlineEventText(arena)
     return normalizeOpening(
@@ -266,17 +321,22 @@ export function generateRound(
   lastTwist = false,
   used: string[] = [],
   lastSources?: [MoveSource, MoveSource],
-): Promise<AiRound> {
+  gags: string[] = [],
+  streak?: { side: Side; count: number },
+): Promise<AiRound & { gags: string[] }> {
+  const lead = streak && { name: fighters[streak.side].monster.character.name, count: streak.count }
   // Tutto ciò che è a coppie va girato come lo vede l'AI.
   const seenFs: FightState = { ...fs, hp: ordered(fs.hp, swap) }
   const roundNo = fs.round + 1
   return retry(async () => {
-    const raw = await askGroq(roundPrompt(ordered(fighters, swap), arena, opening, seenFs, log, event, lastTwist, used, lastSources && ordered(lastSources, swap)), cfg)
+    const raw = await ask(roundPrompt(ordered(fighters, swap), arena, opening, seenFs, log, event, lastTwist, used, lastSources && ordered(lastSources, swap), gags, lead), cfg)
     if (swap) {
       flipPairs(raw, ['moves', 'hits', 'recover', 'stamps', 'ko'])
       const w = sideOf(raw.winner)
       raw.winner = w === null ? null : 1 - w
     }
-    return normalizeJudgement(raw, [offlineMove(fighters, 0, roundNo), offlineMove(fighters, 1, roundNo)])
+    const judgement = normalizeJudgement(raw, [offlineMove(fighters, 0, roundNo), offlineMove(fighters, 1, roundNo)])
+    const newGags = (Array.isArray(raw.gags) ? raw.gags : []).filter((g): g is string => typeof g === 'string' && !!g.trim())
+    return judgement && { ...judgement, gags: newGags.slice(0, 3).map((g) => g.trim().slice(0, 40)) }
   })
 }

@@ -12,6 +12,7 @@ import {
   type MoveSource,
   type Moves,
   type Opening,
+  type Side,
 } from '../shared/battle'
 import { generateOpening, generateRound, type AiConfig } from './groq'
 import { sign, verify } from './token'
@@ -45,12 +46,18 @@ interface FightToken {
   lastSources: [MoveSource, MoveSource] | null
   /** Nel round prima c'è stato un colpo di scena: non due di fila. */
   lastTwist: boolean
+  /** I dettagli comici degli ultimi round, perché non diventino tormentoni. */
+  gags?: string[]
+  /** Chi ha avuto la meglio negli ultimi round di fila: se domina troppo, l'AI lo sa. */
+  streak?: { side: Side; count: number }
   done: boolean
 }
 
 const SLOT_KEYS: Slot[] = ['character', 'weapon', 'personality', 'power']
 const LOG_SIZE = 5
 const USED_SIZE = 24
+/** Circa due round di dettagli comici. */
+const GAGS_SIZE = 6
 
 function cleanName(v: unknown, fallback: string): string {
   const s = typeof v === 'string' ? v.replace(/[\u0000-\u001f<>{}"]/g, '').trim().slice(0, 20) : ''
@@ -97,9 +104,10 @@ export const hasDirtyCard = (fighters: [Fighter, Fighter]) => fighters.some((f) 
  * - { stage: "round", token } → { round, next, token }
  */
 export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Promise<HandlerResult> {
-  if (!cfg.apiKey) return { status: 503, body: { error: 'missing_key' } }
-  const base: AiConfig = { ...cfg, apiKey: cfg.apiKey }
-  const secret = cfg.secret || cfg.apiKey
+  const key = cfg.claudeKey || cfg.apiKey
+  if (!key) return { status: 503, body: { error: 'missing_key' } }
+  const base: AiConfig = { ...cfg, apiKey: cfg.apiKey ?? '' }
+  const secret = cfg.secret || key
   const rand = cfg.rand ?? Math.random
   let body: Record<string, unknown>
   try {
@@ -116,7 +124,7 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       const event = eventAt(t.opening.events, t.fs.round + 1)
       const ai = { ...base, dirty: hasDirtyCard(parsed.fighters) }
       // L'ordine in cui l'AI vede i due combattenti si rimescola a ogni round: i modelli tendono a favorire uno dei due.
-      const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, event, ai, t.lastTwist, t.used, t.lastSources ?? undefined)
+      const judgement = await generateRound(parsed.fighters, parsed.arena, rand() < 0.5, t.opening, t.fs, t.log, event, ai, t.lastTwist, t.used, t.lastSources ?? undefined, t.gags, t.streak)
       const [m0, m1] = judgement.moves
       const moves: Moves = { names: [m0.name, m1.name], actions: [m0.text, m1.text] }
       const names: [string, string] = [parsed.fighters[0].monster.character.name, parsed.fighters[1].monster.character.name]
@@ -124,9 +132,10 @@ export async function handleBattleRequest(raw: string, cfg: HandlerConfig): Prom
       // La rarità della carta da cui nasce la mossa pesa sui danni, di nascosto.
       const power: [number, number] = [movePower(parsed.fighters[0].monster, m0.source), movePower(parsed.fighters[1].monster, m1.source)]
       const { round, next } = playRound(t.fs, moves, { ...judgement, twist }, names, rand, event, power)
+      const streak = round.winner === null ? undefined : { side: round.winner, count: t.streak?.side === round.winner ? t.streak.count + 1 : 1 }
       const log = [...t.log, round.summary].filter(Boolean).slice(-LOG_SIZE)
       const used = [...t.used, m0.name, m1.name].slice(-USED_SIZE)
-      const token = sign({ ...t, fs: next, log, used, lastSources: [m0.source, m1.source], lastTwist: !!twist, done: !!round.end } satisfies FightToken, secret)
+      const token = sign({ ...t, fs: next, log, used, lastSources: [m0.source, m1.source], lastTwist: !!twist, gags: [...judgement.gags, ...(t.gags ?? [])].slice(0, GAGS_SIZE), streak, done: !!round.end } satisfies FightToken, secret)
       return { status: 200, body: { round, next, token } }
     }
 

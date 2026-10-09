@@ -32,6 +32,9 @@ function devBattleApi(mode: string): Plugin {
             apiKey: env.GROQ_API_KEY,
             model: env.GROQ_MODEL,
             reasoning: env.GROQ_REASONING,
+            claudeKey: env.ANTHROPIC_API_KEY,
+            claudeModel: env.CLAUDE_MODEL,
+            claudeEffort: env.CLAUDE_EFFORT,
             secret: env.BATTLE_SECRET,
           })
         } catch (e) {
